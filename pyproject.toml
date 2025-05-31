@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "approximate_riemann_solvers_py"
+version = "0.1.0"
+description = "A python port of a collection of Riemann solver implementations"
+authors = [{name="Genis Bonet Garcia", email="gbonetgarcia@gmail.com"}]
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib"
+]
+
+[project.scripts]
+muscl-euler1d = "MUSCL_TVD_FagioDiFapo.MUSCL_Euler1d:main"
