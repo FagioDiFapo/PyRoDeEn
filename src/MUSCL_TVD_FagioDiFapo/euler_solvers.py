@@ -26,7 +26,7 @@ def Euler_IC1d(x, input):
             rho = [1,   0.125]
             tEnd = 0.1; cfl = 0.90
         case _:
-            raise Exception("Case not available")
+            raise Exception(f"specified case '{input}' not available")
 
     print(f'density (L): {rho[0]}')
     print(f'velocity(L): {u[0]}')

@@ -51,9 +51,7 @@ def final_plots(xc, r, u, p, E, xe, re, ue, pe, Ee, fluxMth):
     plt.subplot(2, 2, 4); plt.plot(xc, E, 'ro', xe, Ee, '-k'); plt.xlabel('x'); plt.ylabel('E')
     plt.show()
 
-def run_muscl_solver(
-    cfl=0.5, tEnd=0.15, nx=200, n=5, IC=1, limiter='VA', fluxMth='HLLC', plot_fig=1
-):
+def run_muscl_solver(cfl=0.5, tEnd=0.15, nx=200, n=5, IC=1, limiter='VA', fluxMth='HLLC', plot_fig=1):
     """Run the MUSCL solver for the 1D Euler equations."""
     gamma = (n + 2) / n
     Lx = 1
@@ -121,7 +119,7 @@ def run_muscl_solver(
     E = q[2, :] / r
     p = (gamma - 1) * r * (E - 0.5 * u ** 2)
 
-    print('Execution time = ', cputime)
+    print(f'Execution time = {cputime:.2f} seconds')
     final_plots(xc, r, u, p, E, xe, re, ue, pe, Ee, fluxMth)
 
 def main():
