@@ -78,6 +78,7 @@ def MUSCL_EulerRes2d_v0(q, _, dx, dy, N, M, limiter, fluxMethod):
                 raise ValueError("flux option not available")
             residual[i, j, :] += flux / dx
             residual[i, j+1, :] -= flux / dx
+    #print(residual[:, :, 0])
 
     # Residuals: y-direction
     for i in range(1, M-2):
@@ -90,39 +91,44 @@ def MUSCL_EulerRes2d_v0(q, _, dx, dy, N, M, limiter, fluxMethod):
                 raise ValueError("flux option not available")
             residual[i, j, :] += flux / dy
             residual[i+1, j, :] -= flux / dy
+    #print(residual[:, :, 0])
 
     # Set BCs: boundary flux contributions
     # North face (i = M-1)
-    for j in range(1, N - 2):
+    for j in range(1, N - 1):
         qR = qS[M - 2, j, :]
         qL = qR
         if fluxMethod == 'HLLE1d':
             flux = HLLE1Dflux(qL, qR, [0, 1])
         residual[M - 2, j, :] += flux / dy
+    #print(residual[:, :, 0])
 
     # East face (j = N-2)
-    for i in range(1, M - 2):
+    for i in range(1, M - 1):
         qR = qW[i, N - 2, :]
         qL = qR
         if fluxMethod == 'HLLE1d':
             flux = HLLE1Dflux(qL, qR, [1, 0])
         residual[i, N - 2, :] += flux / dx
+    #print(residual[:, :, 0])
 
     # South face (i = 1)
-    for j in range(1, N - 2):
+    for j in range(1, N - 1):
         qR = qN[1, j, :]
         qL = qR
         if fluxMethod == 'HLLE1d':
             flux = HLLE1Dflux(qL, qR, [0, -1])
         residual[1, j, :] += flux / dy
+    #print(residual[:, :, 0])
 
     # West face (j = 1)
-    for i in range(1, M - 2):
+    for i in range(1, M - 1):
         qR = qE[i, 1, :]
         qL = qR
         if fluxMethod == 'HLLE1d':
             flux = HLLE1Dflux(qL, qR, [-1, 0])
         residual[i, 1, :] += flux / dx
+    #print(residual[:, :, 0])
 
     # Prepare residual as layers: [rho, rho*u, rho*v, rho*E]
     res = np.zeros_like(residual)
