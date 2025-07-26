@@ -1,13 +1,14 @@
 import numpy as np
 
-def minmod(v):
+def minmod(vectors):
     # Using Harten's generalized definition
-    v = np.array(v)
-    s = np.sum(np.sign(v)) / len(v)
-    if abs(s) == 1:
-        return s * np.min(np.abs(v))
-    else:
-        return 0.0
+    # vectors is a list/array of arrays of same shape
+    stacked = np.stack(vectors, axis=0)  # shape (num_slopes, M-2, N-2)
+    s = np.sum(np.sign(stacked), axis=0) / stacked.shape[0]
+    mm = np.zeros_like(stacked[0])
+    mask = np.abs(s) == 1
+    mm[mask] = s[mask] * np.min(np.abs(stacked[:, mask]), axis=0)
+    return mm
 
 def vanalbada(da, db, h):
     # Van Albada Slope Limiter Function
