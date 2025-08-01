@@ -29,6 +29,7 @@ def MUSCL_EulerRes2d_v0(q, _, dx, dy, N, M, limiter, fluxMethod):
     A genuine 2d HLLE Riemann solver for Euler Equations using a Monotonic
     Upstream Centered Scheme for Conservation Laws (MUSCL).
     Vectorized version: uses only numpy arrays for all states and residuals.
+    Original code written by Manuel Diaz, NTU, 05.25.2015.
     """
 
     # Allocate arrays for all states
