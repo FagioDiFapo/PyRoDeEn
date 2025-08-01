@@ -16,3 +16,4 @@ dependencies = [
 [project.scripts]
 muscl-euler1d = "MUSCL_TVD_FagioDiFapo.MUSCL_Euler1d:main"
 muscl-euler2d = "MUSCL_TVD_Genuine2D_FagioDiFapo.MUSCL_Euler2d:main"
+muscl-euler-sod2d = "MUSCL_TVD_Genuine2D_FagioDiFapo.MUSCL_Euler_sod2d:main"
