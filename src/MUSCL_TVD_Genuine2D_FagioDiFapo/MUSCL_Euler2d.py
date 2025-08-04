@@ -26,7 +26,6 @@ import matplotlib.pyplot as plt
 import time
 from .utils import Euler_IC2d
 from .MUSCL_EulerRes2d_v0 import MUSCL_EulerRes2d_v0
-from .MUSCL_EulerRes2d_v1 import MUSCL_EulerRes2d_v1
 
 def init_plots(x, y, r0, u0, v0, p0):
     fig, axs = plt.subplots(2, 2, figsize=(10, 8))
