@@ -2,6 +2,7 @@ import numpy as np
 import time
 import matplotlib.pyplot as plt
 import cantera as ct
+import copy
 from .utils import minmod, vanalbada, vanLeer, HLLE1Dflux, HLLE1Dflux_vec
 from MUSCL_TVD_FagioDiFapo.euler_solvers import EulerExact
 
@@ -45,48 +46,55 @@ class CFDGrid:
             new_species_array[:, :, :ns] = self.species
             self.species = new_species_array
 
-    def initialize_chemistry(self, fractions_dict, mechanism='gri30.yaml'):
+    def initialize_chemistry(self, mass_fractions, mechanism='gri30.yaml'):
         """
         Set initial species mass fractions for the whole grid, normalized using Cantera.
         Also prepares a Cantera IdealGasReactor per cell, with T, P derived from Euler variables.
         """
         # Use Cantera to validate species
         gas_ref = ct.Solution(mechanism)
-        for s in fractions_dict:
-            if s not in set(gas_ref.species_names):
+        for s in mass_fractions:
+            if s not in gas_ref.species_names:
                 raise ValueError(f"Species '{s}' not found in mechanism '{mechanism}'.")
 
         # Add any new valid species to the grid
-        for s in fractions_dict:
+        for s in mass_fractions:
             self.add_species(s)
 
-        # Use Cantera to normalize
-        gas_ref.Y = fractions_dict  # normalize
+        # Use Cantera to normalize mass fractions
+        gas_ref.Y = mass_fractions
 
         # Store normalized mass fractions in the species array
         for name in self.species_names:
             idx = self.species_index[name]
             self.species[:, :, idx] = gas_ref.Y[gas_ref.species_index(name)]
 
+        # Vectorized calculation of Euler variables
+        rho = self.q[:, :, 0]
+        rho_u = self.q[:, :, 1]
+        rho_v = self.q[:, :, 2]
+        rho_E = self.q[:, :, 3]
+        # Avoid division by zero
+        mask = rho > 0
+        u = np.zeros_like(rho)
+        v = np.zeros_like(rho)
+        e = np.zeros_like(rho)
+        u[mask] = rho_u[mask] / rho[mask]
+        v[mask] = rho_v[mask] / rho[mask]
+        e[mask] = (rho_E[mask] / rho[mask]) - 0.5 * (u[mask]**2 + v[mask]**2) # internal energy
+
         # Prepare the grid of reactors with T, P from Euler variables
         self.cantera_reactors = [[None for _ in range(self.nx)] for _ in range(self.ny)]
         for j in range(self.ny):
             for i in range(self.nx):
-                # Get local Euler variables
-                rho = self.q[j, i, 0]
-                rho_u = self.q[j, i, 1]
-                rho_v = self.q[j, i, 2]
-                rho_E = self.q[j, i, 3]
-                u = rho_u / rho
-                v = rho_v / rho
-                e = (rho_E / rho) - 0.5 * (u**2 + v**2)  # specific internal energy
-
-                # Set Cantera state by density, internal energy, and mass fractions
-                gas = ct.Solution(mechanism)
-                gas.UVY = e, 1.0 / rho, fractions_dict
-
-                # Now use gas.T, gas.P for the reactor
+                if not mask[j, i]:
+                    raise ValueError(f"Zero density at cell ({j},{i})")
+                # Build per-cell mass fraction dict
+                cell_Y = {name: float(self.species[j, i, idx]) for name, idx in self.species_index.items()}
+                gas = ct.Solution(mechanism)  # Always create a new Solution object
+                gas.UVY = e[j, i], 1.0 / rho[j, i], cell_Y
                 reactor = ct.IdealGasReactor(gas, volume=self.dx * self.dy)
+                #print(f"Reactor created at ({j},{i}): T={gas.T}, P={gas.P}")
                 self.cantera_reactors[j][i] = reactor
 
     def initialize_euler(self, rho, rho_u, rho_v, rho_E):
@@ -704,7 +712,7 @@ if __name__ == "__main__":
 
     # Use Cantera to get consistent initial thermodynamic state
     gas = ct.Solution('gri30.yaml')
-    gas.TPY = 300.0, 101325.0, fractions  # Set T [K], P [Pa], and composition
+    gas.TPY = 320.0, 101325.0, fractions  # Set T [K], P [Pa], and composition
 
     rho0 = gas.density
     u0 = 0.0
