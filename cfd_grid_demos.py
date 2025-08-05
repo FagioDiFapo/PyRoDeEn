@@ -175,15 +175,13 @@ def run_2d_sod_with_grid():
     final_plots(x_slice, r, u, p, E, xe, re, ue, pe, Ee)
 
 
-def run_blast_test():
+def run_blast_test(tEnd=0.3, nx=100, ny=100, plot=True):
     start = time.time()
     # Parameters
-    nx, ny = 100, 100
     Lx, Ly = 1.0, 1.0
     dx, dy = Lx / nx, Ly / ny
     n = 5
     gamma = (n + 2) / n
-    tEnd = 1.0
     CFL = 0.5
 
     # Grid
@@ -214,17 +212,17 @@ def run_blast_test():
     dt = CFL * min(dx, dy) / a0
 
     # Plot setup
-    plt.ion()
-    fig, ax = plt.subplots(figsize=(6, 5))
-    im = ax.imshow(p0, origin='lower', extent=[0, Lx, 0, Ly], cmap='plasma', vmin=0, vmax=1.0)
-    plt.colorbar(im, ax=ax, label='Pressure')
-    ax.set_title('2D Blast Wave: Pressure')
-    ax.set_xlabel('x')
-    ax.set_ylabel('y')
-
-    plt.show(block=False)
-    fig.canvas.draw()
-    plt.pause(0.1)  # Give the GUI event loop time to process
+    if plot:
+        plt.ion()
+        fig, ax = plt.subplots(figsize=(6, 5))
+        im = ax.imshow(p0, origin='lower', extent=[0, Lx, 0, Ly], cmap='plasma', vmin=0, vmax=1.0)
+        plt.colorbar(im, ax=ax, label='Pressure')
+        ax.set_title('2D Blast Wave: Pressure')
+        ax.set_xlabel('x')
+        ax.set_ylabel('y')
+        plt.show(block=False)
+        fig.canvas.draw()
+        plt.pause(0.1)  # Give the GUI event loop time to process
 
     t = 0.0
     it = 0
@@ -257,29 +255,28 @@ def run_blast_test():
         p = (gamma - 1) * r * (E - 0.5 * (u ** 2 + v ** 2))
 
         # Update plot every x steps
-        if it % 1 == 0:
+        if plot and it % 1 == 0:
             im.set_data(p)
             ax.set_title(f'2D Blast Wave: Pressure, t={t:.3f}')
             plt.pause(0.001)
         t += dt
         it += 1
 
-    plt.show()
-    plt.close(fig)
-    plt.close('all')
+    if plot:
+        plt.show()
+        plt.close(fig)
+        plt.close('all')
     end = time.time()
     print(f"Non-vectorized simulation time: {end - start:.3f} seconds")
     return end - start
 
-def run_blast_test_vectorized():
+def run_blast_test_vectorized(tEnd=0.3, nx=100, ny=100, plot=True):
     start = time.time()
     # Parameters
-    nx, ny = 100, 100
     Lx, Ly = 1.0, 1.0
     dx, dy = Lx / nx, Ly / ny
     n = 5
     gamma = (n + 2) / n
-    tEnd = 1.0
     CFL = 0.5
 
     # Grid
@@ -310,17 +307,17 @@ def run_blast_test_vectorized():
     dt = CFL * min(dx, dy) / a0
 
     # Plot setup
-    plt.ion()
-    fig, ax = plt.subplots(figsize=(6, 5))
-    im = ax.imshow(p0, origin='lower', extent=[0, Lx, 0, Ly], cmap='plasma', vmin=0, vmax=1.0)
-    plt.colorbar(im, ax=ax, label='Pressure')
-    ax.set_title('2D Blast Wave: Pressure')
-    ax.set_xlabel('x')
-    ax.set_ylabel('y')
-
-    plt.show(block=False)
-    fig.canvas.draw()
-    plt.pause(0.1)  # Give the GUI event loop time to process
+    if plot:
+        plt.ion()
+        fig, ax = plt.subplots(figsize=(6, 5))
+        im = ax.imshow(p0, origin='lower', extent=[0, Lx, 0, Ly], cmap='plasma', vmin=0, vmax=1.0)
+        plt.colorbar(im, ax=ax, label='Pressure')
+        ax.set_title('2D Blast Wave: Pressure')
+        ax.set_xlabel('x')
+        ax.set_ylabel('y')
+        plt.show(block=False)
+        fig.canvas.draw()
+        plt.pause(0.1)  # Give the GUI event loop time to process
 
     t = 0.0
     it = 0
@@ -353,25 +350,108 @@ def run_blast_test_vectorized():
         p = (gamma - 1) * r * (E - 0.5 * (u ** 2 + v ** 2))
 
         # Update plot every x steps
-        if it % 1 == 0:
+        if plot and it % 1 == 0:
             im.set_data(p)
             ax.set_title(f'2D Blast Wave: Pressure, t={t:.3f}')
             plt.pause(0.001)
         t += dt
         it += 1
 
-    plt.show()
-    plt.close(fig)
-    plt.close('all')
+    if plot:
+        plt.show()
+        plt.close(fig)
+        plt.close('all')
     end = time.time()
     print(f"Vectorized simulation time: {end - start:.3f} seconds")
     return end - start
 
+
+def benchmark_vectorization():
+    sizes = [10, 20, 30, 40, 50, 60]  # You can adjust or extend this list
+    t_vec = []
+    t_nonvec = []
+
+    for n in sizes:
+        print(f"Running for grid size {n}x{n}...")
+        # Vectorized
+        t_v = run_blast_test_vectorized(0.3, n, n, False)
+        t_vec.append(t_v)
+        # Non-vectorized
+        t_nv = run_blast_test(0.3, n, n, False)
+        t_nonvec.append(t_nv)
+
+    # Plot results
+    plt.figure()
+    plt.plot(sizes, t_vec, 'o-', label='Vectorized')
+    plt.plot(sizes, t_nonvec, 's-', label='Non-vectorized')
+    plt.xlabel('Grid size (N x N)')
+    plt.ylabel('Simulation time (s)')
+    plt.title('Vectorized vs Non-vectorized CFD Runtime')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+    # Plot speedup
+    speedup = [nv/v if v > 0 else 0 for nv, v in zip(t_nonvec, t_vec)]
+    plt.figure()
+    plt.plot(sizes, speedup, 'd-')
+    plt.xlabel('Grid size (N x N)')
+    plt.ylabel('Speedup (Non-vectorized / Vectorized)')
+    plt.title('Vectorization Speedup vs Grid Size')
+    plt.grid(True)
+    plt.show()
+
+    # --- Second part: Benchmark vs tEnd ---
+    tEnds = [0.2, 0.4, 0.6, 0.8]
+    t_vec_time = []
+    t_nonvec_time = []
+
+    n_bench = 40  # Fixed grid size for this part
+    print("\nBenchmarking vs simulation time (tEnd)...")
+    for tEnd in tEnds:
+        print(f"Running for tEnd={tEnd}...")
+        t_v = run_blast_test_vectorized(tEnd, n_bench, n_bench, False)
+        t_vec_time.append(t_v)
+        t_nv = run_blast_test(tEnd, n_bench, n_bench, False)
+        t_nonvec_time.append(t_nv)
+
+    plt.figure()
+    plt.plot(tEnds, t_vec_time, 'o-', label='Vectorized')
+    plt.plot(tEnds, t_nonvec_time, 's-', label='Non-vectorized')
+    plt.xlabel('Simulation end time (tEnd)')
+    plt.ylabel('Simulation time (s)')
+    plt.title(f'Vectorized vs Non-vectorized CFD Runtime (Grid {n_bench}x{n_bench})')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+    speedup_time = [nv/v if v > 0 else 0 for nv, v in zip(t_nonvec_time, t_vec_time)]
+    plt.figure()
+    plt.plot(tEnds, speedup_time, 'd-')
+    plt.xlabel('Simulation end time (tEnd)')
+    plt.ylabel('Speedup (Non-vectorized / Vectorized)')
+    plt.title(f'Vectorization Speedup vs tEnd (Grid {n_bench}x{n_bench})')
+    plt.grid(True)
+    plt.show()
+
+def run_blast_test_vectorized_custom(nx, ny):
+    # Copy your run_blast_test_vectorized, but use nx, ny as arguments
+    # ... (copy code, replace nx, ny assignments)
+    # Return elapsed time
+    pass
+
+def run_blast_test_custom(nx, ny):
+    # Copy your run_blast_test, but use nx, ny as arguments
+    # ... (copy code, replace nx, ny assignments)
+    # Return elapsed time
+    pass
+
 if __name__ == "__main__":
     # to run as module
     # python -m src.MUSCL_TVD_Genuine2D_FagioDiFapo.cfd_grid
-    run_2d_sod_with_grid()
+    #run_2d_sod_with_grid()
     #t_vec = run_blast_test_vectorized()
     #t_nonvec = run_blast_test()
     #if t_vec > 0:
     #    print(f"Speedup: {t_nonvec / t_vec:.2f}x faster (vectorized vs non-vectorized)")
+    benchmark_vectorization()
