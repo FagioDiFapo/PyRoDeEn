@@ -48,50 +48,44 @@ class CFDGrid:
     def initialize_chemistry(self, fractions_dict, mechanism='gri30.yaml'):
         """
         Set initial species mass fractions for the whole grid, normalized using Cantera.
-        Also prepares a Cantera IdealGasReactor per cell.
+        Also prepares a Cantera IdealGasReactor per cell, with T, P derived from Euler variables.
         """
-
-        # Use Cantera to get valid species
+        # Use Cantera to validate species
         gas_ref = ct.Solution(mechanism)
-        mechanism_species = set(gas_ref.species_names)
-
-        # Check for invalid species
         for s in fractions_dict:
-            if s not in mechanism_species:
+            if s not in set(gas_ref.species_names):
                 raise ValueError(f"Species '{s}' not found in mechanism '{mechanism}'.")
 
         # Add any new valid species to the grid
         for s in fractions_dict:
-            if s not in self.species_names:
-                self.add_species(s)
+            self.add_species(s)
 
         # Use Cantera to normalize
-        gas_ref = ct.Solution(mechanism)
-        valid_fractions = {k: v for k, v in fractions_dict.items() if k in gas_ref.species_names}
-        gas_ref.Y = valid_fractions  # normalize
+        gas_ref.Y = fractions_dict  # normalize
 
         # Store normalized mass fractions in the species array
         for name in self.species_names:
             idx = self.species_index[name]
-            if name in gas_ref.species_names:
-                self.species[:, :, idx] = gas_ref.Y[gas_ref.species_index(name)]
-            else:
-                self.species[:, :, idx] = 0.0  # Not present in mechanism, set to zero
+            self.species[:, :, idx] = gas_ref.Y[gas_ref.species_index(name)]
 
-        # Optionally set T, P
-        T0 = 300.0
-        P0 = 101325.0
-        gas_ref.TP = T0, P0
-
-        # Prepare the grid of reactors
+        # Prepare the grid of reactors with T, P from Euler variables
         self.cantera_reactors = [[None for _ in range(self.nx)] for _ in range(self.ny)]
         for j in range(self.ny):
             for i in range(self.nx):
-                # Clone the reference gas for each cell
+                # Get local Euler variables
+                rho = self.q[j, i, 0]
+                rho_u = self.q[j, i, 1]
+                rho_v = self.q[j, i, 2]
+                rho_E = self.q[j, i, 3]
+                u = rho_u / rho
+                v = rho_v / rho
+                e = (rho_E / rho) - 0.5 * (u**2 + v**2)  # specific internal energy
+
+                # Set Cantera state by density, internal energy, and mass fractions
                 gas = ct.Solution(mechanism)
-                gas.TPY = gas_ref.T, gas_ref.P, gas_ref.Y
-                # If you want to set a different composition per cell, do it here
-                # gas.Y = ... (cell-specific)
+                gas.UVY = e, 1.0 / rho, fractions_dict
+
+                # Now use gas.T, gas.P for the reactor
                 reactor = ct.IdealGasReactor(gas, volume=self.dx * self.dy)
                 self.cantera_reactors[j][i] = reactor
 
@@ -699,15 +693,31 @@ def run_blast_test_vectorized():
     return end - start
 
 if __name__ == "__main__":
-    # Create a grid with some species (no 'AR' initially)
-    g = CFDGrid(Lx=1.0, Ly=1.0, nx=10, ny=10, species=['H2', 'O2', 'H', 'O', 'OH', 'HO2', 'H2O2', 'H2O'])
+    import cantera as ct
 
-    # Define initial mass fractions, including 'AR' (argon, present in gri30.yaml)
+    # Define species and initial mass fractions (including AR, which is in gri30.yaml)
+    species = ['H2', 'O2', 'H', 'O', 'OH', 'HO2', 'H2O2', 'H2O']
     fractions = {'H2': 2, 'O2': 1, 'H': 0, 'O': 0, 'OH': 0, 'HO2': 0, 'H2O2': 0, 'H2O': 0, 'AR': 0.5}
 
-    print("Species before initialization:", g.species_names)
+    # Create grid
+    g = CFDGrid(Lx=1.0, Ly=1.0, nx=10, ny=10, species=species)
+
+    # Use Cantera to get consistent initial thermodynamic state
+    gas = ct.Solution('gri30.yaml')
+    gas.TPY = 300.0, 101325.0, fractions  # Set T [K], P [Pa], and composition
+
+    rho0 = gas.density
+    u0 = 0.0
+    v0 = 0.0
+    e0 = gas.int_energy_mass
+    E0 = e0 + 0.5 * (u0**2 + v0**2)
+
+    # Initialize Euler variables with physical values
+    g.initialize_euler(rho=rho0, rho_u=u0, rho_v=v0, rho_E=E0 * rho0)
+
+    print("Species before chemistry initialization:", g.species_names)
     g.initialize_chemistry(fractions)
-    print("Species after initialization:", g.species_names)
+    print("Species after chemistry initialization:", g.species_names)
     print("Species index mapping:", g.species_index)
     print("Shape of species array:", g.species.shape)
     print("Shape of cantera_reactors array:", len(g.cantera_reactors), "x", len(g.cantera_reactors[0]))
@@ -715,5 +725,7 @@ if __name__ == "__main__":
     # Print normalized mass fractions for the first cell
     print("Normalized mass fractions in cell (0,0):")
     for name in g.species_names:
+        idx = g.species_index[name]
+        print(f"  {name}: {g.species[0,0,idx]:.6f}")
         idx = g.species_index[name]
         print(f"  {name}: {g.species[0,0,idx]:.6f}")

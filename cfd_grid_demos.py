@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Adjust the import path as needed for your project structure:
+from MUSCL_TVD_FagioDiFapo.euler_solvers import EulerExact
 from src.MUSCL_TVD_Genuine2D_FagioDiFapo.cfd_grid import CFDGrid
 
 def blast_ic_2d(x, y, p_high=1.0, p_low=0.1, r0=0.1):
@@ -369,8 +370,8 @@ def run_blast_test_vectorized():
 if __name__ == "__main__":
     # to run as module
     # python -m src.MUSCL_TVD_Genuine2D_FagioDiFapo.cfd_grid
-    #run_2d_sod_with_grid()
-    t_vec = run_blast_test_vectorized()
+    run_2d_sod_with_grid()
+    #t_vec = run_blast_test_vectorized()
     #t_nonvec = run_blast_test()
     #if t_vec > 0:
     #    print(f"Speedup: {t_nonvec / t_vec:.2f}x faster (vectorized vs non-vectorized)")
