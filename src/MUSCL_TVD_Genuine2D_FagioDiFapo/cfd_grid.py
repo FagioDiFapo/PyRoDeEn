@@ -15,22 +15,18 @@ class CFDGrid:
         self.ny = ny
         self.dx = Lx / nx
         self.dy = Ly / ny
-        self.nvars = 4  # [rho, rho*u, rho*v, rho*E]
 
         # Species handling
         if species is None:
             self.species_names = []
             self.nspecies = 0
             self.species_index = {}
-            self.species = None
         else:
             self.species_names = list(species)
             self.nspecies = len(species)
             self.species_index = {name: i for i, name in enumerate(species)}
-            # Initialize species array (uses mass fractions)
-            self.species = np.zeros((ny, nx, self.nspecies))
-
-        # Conserved variables (Euler)
+        # Conserved variables: [rho, rho*u, rho*v, rho*E, rho*Y_0, ..., rho*Y_N]
+        self.nvars = 4 + self.nspecies
         self.q = np.zeros((ny, nx, self.nvars))
         # Cantera reactors (optional)
         self.cantera_reactors = None
@@ -40,61 +36,53 @@ class CFDGrid:
             self.species_names.append(new_species)
             self.species_index[new_species] = self.nspecies
             self.nspecies += 1
-            # Expand the species array
-            ny, nx, ns = self.species.shape
-            new_species_array = np.zeros((ny, nx, self.nspecies))
-            new_species_array[:, :, :ns] = self.species
-            self.species = new_species_array
+            # Expand q array to add new species
+            ny, nx, nvars = self.q.shape
+            new_q = np.zeros((ny, nx, 4 + self.nspecies))
+            new_q[:, :, :nvars] = self.q
+            self.q = new_q
+            self.nvars = 4 + self.nspecies
 
     def initialize_chemistry(self, mass_fractions, mechanism='gri30.yaml'):
         """
         Set initial species mass fractions for the whole grid, normalized using Cantera.
+        Stores rho*Y_k in self.q for each species.
         Also prepares a Cantera IdealGasReactor per cell, with T, P derived from Euler variables.
         """
-        # Use Cantera to validate species
         gas_ref = ct.Solution(mechanism)
         for s in mass_fractions:
             if s not in gas_ref.species_names:
                 raise ValueError(f"Species '{s}' not found in mechanism '{mechanism}'.")
-
-        # Add any new valid species to the grid
         for s in mass_fractions:
             self.add_species(s)
-
-        # Use Cantera to normalize mass fractions
-        gas_ref.Y = mass_fractions
-
-        # Store normalized mass fractions in the species array
+        gas_ref.Y = mass_fractions  # normalize
+        # Set rho*Y_k in q for each species
+        rho = self.q[:, :, 0]
         for name in self.species_names:
             idx = self.species_index[name]
-            self.species[:, :, idx] = gas_ref.Y[gas_ref.species_index(name)]
-
-        # Vectorized calculation of Euler variables
-        rho = self.q[:, :, 0]
+            Yk = gas_ref.Y[gas_ref.species_index(name)]
+            self.q[:, :, 4 + idx] = rho * Yk
+        # Prepare reactors as before (using q for mass fractions)
+        mask = rho > 0
         rho_u = self.q[:, :, 1]
         rho_v = self.q[:, :, 2]
         rho_E = self.q[:, :, 3]
-        # Avoid division by zero
-        mask = rho > 0
         u = np.zeros_like(rho)
         v = np.zeros_like(rho)
         e = np.zeros_like(rho)
         u[mask] = rho_u[mask] / rho[mask]
         v[mask] = rho_v[mask] / rho[mask]
-        e[mask] = (rho_E[mask] / rho[mask]) - 0.5 * (u[mask]**2 + v[mask]**2) # internal energy
-
-        # Prepare the grid of reactors with T, P from Euler variables
+        e[mask] = (rho_E[mask] / rho[mask]) - 0.5 * (u[mask]**2 + v[mask]**2)
         self.cantera_reactors = [[None for _ in range(self.nx)] for _ in range(self.ny)]
         for j in range(self.ny):
             for i in range(self.nx):
                 if not mask[j, i]:
                     raise ValueError(f"Zero density at cell ({j},{i})")
-                # Build per-cell mass fraction dict
-                cell_Y = {name: float(self.species[j, i, idx]) for name, idx in self.species_index.items()}
-                gas = ct.Solution(mechanism)  # Always create a new Solution object
+                # Build per-cell mass fraction dict from q
+                cell_Y = {name: float(self.q[j, i, 4 + idx] / rho[j, i]) for name, idx in self.species_index.items()}
+                gas = ct.Solution(mechanism)
                 gas.UVY = e[j, i], 1.0 / rho[j, i], cell_Y
                 reactor = ct.IdealGasReactor(gas, volume=self.dx * self.dy)
-                #print(f"Reactor created at ({j},{i}): T={gas.T}, P={gas.P}")
                 self.cantera_reactors[j][i] = reactor
 
     def initialize_euler(self, rho, rho_u, rho_v, rho_E):
@@ -102,7 +90,6 @@ class CFDGrid:
         Set initial Euler conserved variables for the whole grid.
         Parameters can be scalars or arrays matching the grid interior shape (ny, nx).
         """
-        # Broadcast to interior shape if needed
         ny, nx = self.ny, self.nx
         self.q[:, :, 0] = np.broadcast_to(rho, (ny, nx))
         self.q[:, :, 1] = np.broadcast_to(rho_u, (ny, nx))
@@ -124,14 +111,14 @@ class CFDGrid:
         M = self.ny
 
         # Allocate arrays for all states
-        qN = np.zeros((M, N, 4))
-        qS = np.zeros((M, N, 4))
-        qE = np.zeros((M, N, 4))
-        qW = np.zeros((M, N, 4))
-        residual = np.zeros((M, N, 4))
+        qN = np.zeros((M, N, self.nvars))
+        qS = np.zeros((M, N, self.nvars))
+        qE = np.zeros((M, N, self.nvars))
+        qW = np.zeros((M, N, self.nvars))
+        residual = np.zeros((M, N, self.nvars))
 
         # Compute and limit slopes at cells (i,j)
-        for k in range(4):
+        for k in range(self.nvars):
             dqw = q[1:-1, 1:-1, k] - q[1:-1, :-2, k]
             dqe = q[1:-1, 2:, k] - q[1:-1, 1:-1, k]
             dqs = q[1:-1, 1:-1, k] - q[:-2, 1:-1, k]
@@ -236,14 +223,14 @@ class CFDGrid:
         M = self.ny
 
         # Allocate arrays for all states
-        qN = np.zeros((M, N, 4))
-        qS = np.zeros((M, N, 4))
-        qE = np.zeros((M, N, 4))
-        qW = np.zeros((M, N, 4))
-        residual = np.zeros((M, N, 4))
+        qN = np.zeros((M, N, self.nvars))
+        qS = np.zeros((M, N, self.nvars))
+        qE = np.zeros((M, N, self.nvars))
+        qW = np.zeros((M, N, self.nvars))
+        residual = np.zeros((M, N, self.nvars))
 
         # Compute and limit slopes at cells (i,j)
-        for k in range(4):
+        for k in range(self.nvars):
             dqw = q[1:-1, 1:-1, k] - q[1:-1, :-2, k]
             dqe = q[1:-1, 2:, k] - q[1:-1, 1:-1, k]
             dqs = q[1:-1, 1:-1, k] - q[:-2, 1:-1, k]
@@ -727,13 +714,13 @@ if __name__ == "__main__":
     g.initialize_chemistry(fractions)
     print("Species after chemistry initialization:", g.species_names)
     print("Species index mapping:", g.species_index)
-    print("Shape of species array:", g.species.shape)
+    print("Shape of species array:", g.q[:, :, 4:].shape)
     print("Shape of cantera_reactors array:", len(g.cantera_reactors), "x", len(g.cantera_reactors[0]))
 
     # Print normalized mass fractions for the first cell
     print("Normalized mass fractions in cell (0,0):")
+    rho = g.q[0, 0, 0]
     for name in g.species_names:
         idx = g.species_index[name]
-        print(f"  {name}: {g.species[0,0,idx]:.6f}")
-        idx = g.species_index[name]
-        print(f"  {name}: {g.species[0,0,idx]:.6f}")
+        Yk = g.q[0, 0, 4 + idx] / rho
+        print(f"  {name}: {Yk:.6f}")
