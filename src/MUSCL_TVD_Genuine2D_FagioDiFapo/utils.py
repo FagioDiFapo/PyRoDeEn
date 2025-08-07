@@ -79,7 +79,66 @@ def HLLE1Dflux(qL, qR, normal, gamma=1.4):
         HLLE = np.zeros_like(qL)
     return HLLE
 
+def HLLE1Dflux_vec(qL, qR, normal, gamma=1.4):
+    """
+    Vectorized HLLE flux for Euler equations in 2D.
+    qL, qR: (..., 4) arrays of left/right states
+    normal: [nx, ny]
+    Returns: (..., 4) array of fluxes
+    """
+    nx, ny = normal
 
+    # Left state
+    rL = qL[..., 0]
+    uL = qL[..., 1] / rL
+    vL = qL[..., 2] / rL
+    vnL = uL * nx + vL * ny
+    pL = (gamma - 1) * (qL[..., 3] - rL * (uL ** 2 + vL ** 2) / 2)
+    aL = np.sqrt(gamma * pL / rL)
+    HL = (qL[..., 3] + pL) / rL
+
+    # Right state
+    rR = qR[..., 0]
+    uR = qR[..., 1] / rR
+    vR = qR[..., 2] / rR
+    vnR = uR * nx + vR * ny
+    pR = (gamma - 1) * (qR[..., 3] - rR * (uR ** 2 + vR ** 2) / 2)
+    aR = np.sqrt(gamma * pR / rR)
+    HR = (qR[..., 3] + pR) / rR
+
+    # Roe averages
+    RT = np.sqrt(rR / rL)
+    u = (uL + RT * uR) / (1 + RT)
+    v = (vL + RT * vR) / (1 + RT)
+    H = (HL + RT * HR) / (1 + RT)
+    a = np.sqrt((gamma - 1) * (H - (u ** 2 + v ** 2) / 2))
+    vn = u * nx + v * ny
+
+    # Wave speed estimates
+    SLm = np.minimum.reduce([vnL - aL, vn - a, np.zeros_like(vn)])
+    SRp = np.maximum.reduce([vnR + aR, vn + a, np.zeros_like(vn)])
+
+    # Left and Right fluxes
+    FL = np.stack([
+        rL * vnL,
+        rL * vnL * uL + pL * nx,
+        rL * vnL * vL + pL * ny,
+        rL * vnL * HL
+    ], axis=-1)
+    FR = np.stack([
+        rR * vnR,
+        rR * vnR * uR + pR * nx,
+        rR * vnR * vR + pR * ny,
+        rR * vnR * HR
+    ], axis=-1)
+
+    # HLLE flux
+    denom = SRp - SLm
+    # Avoid division by zero
+    denom_safe = np.where(denom == 0, 1.0, denom)
+    HLLE = (SRp[..., None] * FL - SLm[..., None] * FR + SLm[..., None] * SRp[..., None] * (qR - qL)) / denom_safe[..., None]
+    HLLE = np.where(denom[..., None] == 0, 0.0, HLLE)
+    return HLLE
 
 def HLLE2Dflux(qSW, qSE, qNW, qNE, gamma=1.4):
     # Compute HLLE flux
@@ -422,64 +481,3 @@ def Euler_IC2d(x, y, input):
     p_0 = p[0]*reg1 + p[1]*reg2 + p[2]*reg3 + p[3]*reg4; # temperature.
 
     return r_0, u_0, v_0, p_0
-
-def HLLE1Dflux_vec(qL, qR, normal, gamma=1.4):
-    """
-    Vectorized HLLE flux for Euler equations in 2D.
-    qL, qR: (..., 4) arrays of left/right states
-    normal: [nx, ny]
-    Returns: (..., 4) array of fluxes
-    """
-    nx, ny = normal
-
-    # Left state
-    rL = qL[..., 0]
-    uL = qL[..., 1] / rL
-    vL = qL[..., 2] / rL
-    vnL = uL * nx + vL * ny
-    pL = (gamma - 1) * (qL[..., 3] - rL * (uL ** 2 + vL ** 2) / 2)
-    aL = np.sqrt(gamma * pL / rL)
-    HL = (qL[..., 3] + pL) / rL
-
-    # Right state
-    rR = qR[..., 0]
-    uR = qR[..., 1] / rR
-    vR = qR[..., 2] / rR
-    vnR = uR * nx + vR * ny
-    pR = (gamma - 1) * (qR[..., 3] - rR * (uR ** 2 + vR ** 2) / 2)
-    aR = np.sqrt(gamma * pR / rR)
-    HR = (qR[..., 3] + pR) / rR
-
-    # Roe averages
-    RT = np.sqrt(rR / rL)
-    u = (uL + RT * uR) / (1 + RT)
-    v = (vL + RT * vR) / (1 + RT)
-    H = (HL + RT * HR) / (1 + RT)
-    a = np.sqrt((gamma - 1) * (H - (u ** 2 + v ** 2) / 2))
-    vn = u * nx + v * ny
-
-    # Wave speed estimates
-    SLm = np.minimum.reduce([vnL - aL, vn - a, np.zeros_like(vn)])
-    SRp = np.maximum.reduce([vnR + aR, vn + a, np.zeros_like(vn)])
-
-    # Left and Right fluxes
-    FL = np.stack([
-        rL * vnL,
-        rL * vnL * uL + pL * nx,
-        rL * vnL * vL + pL * ny,
-        rL * vnL * HL
-    ], axis=-1)
-    FR = np.stack([
-        rR * vnR,
-        rR * vnR * uR + pR * nx,
-        rR * vnR * vR + pR * ny,
-        rR * vnR * HR
-    ], axis=-1)
-
-    # HLLE flux
-    denom = SRp - SLm
-    # Avoid division by zero
-    denom_safe = np.where(denom == 0, 1.0, denom)
-    HLLE = (SRp[..., None] * FL - SLm[..., None] * FR + SLm[..., None] * SRp[..., None] * (qR - qL)) / denom_safe[..., None]
-    HLLE = np.where(denom[..., None] == 0, 0.0, HLLE)
-    return HLLE
