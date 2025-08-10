@@ -43,7 +43,7 @@ class CFDGrid:
             self.q = new_q
             self.nvars = 4 + self.nspecies
 
-    def initialize_chemistry(self, mass_fractions, mechanism='gri30.yaml'):
+    def initialize_chemistry(self, mass_fractions, temperature=300.0, mechanism='gri30.yaml'):
         """
         Set initial species mass fractions for the whole grid, normalized using Cantera.
         Stores rho*Y_k in self.q for each species.
@@ -58,21 +58,25 @@ class CFDGrid:
         gas_ref.Y = mass_fractions  # normalize
         # Set rho*Y_k in q for each species
         rho = self.q[:, :, 0]
+        rho_u = self.q[:, :, 1]
+        rho_v = self.q[:, :, 2]
+        u = np.zeros_like(rho)
+        v = np.zeros_like(rho)
+        mask = rho > 0
+        u[mask] = rho_u[mask] / rho[mask]
+        v[mask] = rho_v[mask] / rho[mask]
+
+
+        # Set rho*Y_k in q for each species
         for name in self.species_names:
             idx = self.species_index[name]
             Yk = gas_ref.Y[gas_ref.species_index(name)]
             self.q[:, :, 4 + idx] = rho * Yk
-        # Prepare reactors as before (using q for mass fractions)
-        mask = rho > 0
-        rho_u = self.q[:, :, 1]
-        rho_v = self.q[:, :, 2]
-        rho_E = self.q[:, :, 3]
-        u = np.zeros_like(rho)
-        v = np.zeros_like(rho)
-        e = np.zeros_like(rho)
-        u[mask] = rho_u[mask] / rho[mask]
-        v[mask] = rho_v[mask] / rho[mask]
-        e[mask] = (rho_E[mask] / rho[mask]) - 0.5 * (u[mask]**2 + v[mask]**2)
+
+        # Variables for updating total internal energy
+        E_mat = np.zeros_like(rho)
+        T = np.full_like(rho, temperature) if np.isscalar(temperature) else temperature
+        # Initialize Cantera reactors for each cell
         self.cantera_reactors = [[None for _ in range(self.nx)] for _ in range(self.ny)]
         for j in range(self.ny):
             for i in range(self.nx):
@@ -81,9 +85,12 @@ class CFDGrid:
                 # Build per-cell mass fraction dict from q
                 cell_Y = {name: float(self.q[j, i, 4 + idx] / rho[j, i]) for name, idx in self.species_index.items()}
                 gas = ct.Solution(mechanism)
-                gas.UVY = e[j, i], 1.0 / rho[j, i], cell_Y
+                gas.TDY = T[j, i], rho[j, i], cell_Y
+                e = gas.int_energy_mass
+                E_mat[j, i] = e + 0.5 * (u[j, i]**2 + v[j, i]**2)
                 reactor = ct.IdealGasReactor(gas, volume=self.dx * self.dy)
                 self.cantera_reactors[j][i] = reactor
+        self.q[:, :, 3] = rho * E_mat
 
     def initialize_euler(self, rho, rho_u, rho_v, rho_E):
         """
@@ -303,6 +310,81 @@ class CFDGrid:
         res[1:M-1, 1:N-1, :] = residual[1:M-1, 1:N-1, :]
         return res
 
+    def advance_chemistry(self, dt):
+        """
+        Advance chemistry in all Cantera reactors by time step dt.
+        For each cell:
+        - Update reactor state with current Euler values (rho, u, v, Y_k) from q
+        - Advance reactor by dt
+        - Update q with new state (rho, rho*u, rho*v, rho*E, rho*Y_k)
+        """
+        if self.cantera_reactors is None:
+            raise ValueError("Chemistry not initialized. Call initialize_chemistry first.")
+
+        for j in range(self.ny):
+            for i in range(self.nx):
+                reactor = self.cantera_reactors[j][i]
+                if reactor is not None:
+                    gas = reactor.thermo
+
+                    # 1. Extract current Euler values from q
+                    rho = self.q[j, i, 0]
+                    if not np.isfinite(rho) or rho <= 0:
+                        print(f"Skipping cell ({j},{i}): non-physical density {rho}")
+                        continue
+
+                    rho_u = self.q[j, i, 1]
+                    rho_v = self.q[j, i, 2]
+                    u = rho_u / rho
+                    v = rho_v / rho
+
+                    # Build mass fraction dict from q
+                    Y_dict = {name: float(self.q[j, i, 4 + idx] / rho) for name, idx in self.species_index.items()}
+                    Y_sum = sum(Y_dict.values())
+                    if Y_sum <= 0 or not np.isfinite(Y_sum):
+                        print(f"Skipping cell ({j},{i}): non-physical mass fractions {Y_dict}")
+                        continue
+                    for k in Y_dict:
+                        Y_dict[k] /= Y_sum
+
+                    # 2. Set gas state to match current cell (using density, velocity, Y)
+                    E = self.q[j, i, 3] / rho
+                    kin = 0.5 * (u**2 + v**2)
+                    e = E - kin
+                    if not np.isfinite(e):
+                        print(f"Skipping cell ({j},{i}): non-physical internal energy {e}")
+                        continue
+                    try:
+                        gas.UVY = e, 1.0 / rho, Y_dict
+                    except Exception as ex:
+                        print(f"Failed to set UVY for cell ({j},{i}): {ex}")
+                        try:
+                            gas.TDY = gas.T, max(rho, 1e-8), Y_dict
+                        except Exception as ex2:
+                            print(f"Failed to set TDY for cell ({j},{i}): {ex2}")
+                            continue
+
+                    # 3. Advance chemistry
+                    reactor.advance(reactor.time + dt)
+
+                    # 4. Update q with new state
+                    gas = reactor.thermo
+                    rho_new = gas.density
+                    if not np.isfinite(rho_new) or rho_new <= 0:
+                        print(f"Skipping update for cell ({j},{i}): non-physical new density {rho_new}")
+                        continue
+                    u_new = u  # velocity not changed by chemistry
+                    v_new = v
+                    e_new = gas.int_energy_mass
+                    E_new = e_new + 0.5 * (u_new**2 + v_new**2)
+                    self.q[j, i, 0] = rho_new
+                    self.q[j, i, 1] = rho_new * u_new
+                    self.q[j, i, 2] = rho_new * v_new
+                    self.q[j, i, 3] = rho_new * E_new
+                    for name in self.species_names:
+                        idx = self.species_index[name]
+                        self.q[j, i, 4 + idx] = rho_new * gas.Y[gas.species_index(name)]
+
 def test_initialization():
     # Define species for hydrogen-oxygen system with radicals
     species = ['H2', 'O2', 'H', 'O', 'OH', 'HO2', 'H2O2', 'H2O']
@@ -423,7 +505,7 @@ def run_2d_sod_with_grid():
     # Ghost cells
     nxg, nyg = nx + 2, ny + 2
     grid = CFDGrid(Lx, Ly, nxg, nyg)
-    grid.q[1:-1, 1:-1, :] = Q0
+    grid.q[1:-1, 1:-1, :4] = Q0
     grid.q[:, 0, :] = grid.q[:, 1, :]
     grid.q[:, -1, :] = grid.q[:, -2, :]
     grid.q[0, :, :] = grid.q[1, :, :]
@@ -519,7 +601,7 @@ def run_blast_test():
     # Ghost cells
     nxg, nyg = nx + 2, ny + 2
     grid = CFDGrid(Lx, Ly, nxg, nyg)
-    grid.q[1:-1, 1:-1, :] = Q0
+    grid.q[1:-1, 1:-1, :4] = Q0
     grid.q[:, 0, :] = grid.q[:, 1, :]
     grid.q[:, -1, :] = grid.q[:, -2, :]
     grid.q[0, :, :] = grid.q[1, :, :]
@@ -615,7 +697,7 @@ def run_blast_test_vectorized():
     # Ghost cells
     nxg, nyg = nx + 2, ny + 2
     grid = CFDGrid(Lx, Ly, nxg, nyg)
-    grid.q[1:-1, 1:-1, :] = Q0
+    grid.q[1:-1, 1:-1, :4] = Q0
     grid.q[:, 0, :] = grid.q[:, 1, :]
     grid.q[:, -1, :] = grid.q[:, -2, :]
     grid.q[0, :, :] = grid.q[1, :, :]
@@ -687,7 +769,7 @@ def run_blast_test_vectorized():
     print(f"Vectorized simulation time: {end - start:.3f} seconds")
     return end - start
 
-if __name__ == "__main__":
+def initialization_test():
     import cantera as ct
 
     # Define species and initial mass fractions (including AR, which is in gri30.yaml)
@@ -724,3 +806,6 @@ if __name__ == "__main__":
         idx = g.species_index[name]
         Yk = g.q[0, 0, 4 + idx] / rho
         print(f"  {name}: {Yk:.6f}")
+
+if __name__ == "__main__":
+    initialization_test()
