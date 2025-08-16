@@ -45,9 +45,9 @@ class CFDGrid:
 
     def initialize_chemistry(self, mass_fractions, temperature=300.0, mechanism='gri30.yaml'):
         """
-        Set initial species mass fractions for the whole grid, normalized using Cantera.
+        Set initial species mass fractions for the grid interior, normalized using Cantera.
         Stores rho*Y_k in self.q for each species.
-        Also prepares a Cantera IdealGasReactor per cell, with T, P derived from Euler variables.
+        Only creates reactors for interior cells (excluding ghost cells).
         """
         gas_ref = ct.Solution(mechanism)
         for s in mass_fractions:
@@ -56,6 +56,7 @@ class CFDGrid:
         for s in mass_fractions:
             self.add_species(s)
         gas_ref.Y = mass_fractions  # normalize
+
         # Set rho*Y_k in q for each species
         rho = self.q[:, :, 0]
         rho_u = self.q[:, :, 1]
@@ -66,7 +67,6 @@ class CFDGrid:
         u[mask] = rho_u[mask] / rho[mask]
         v[mask] = rho_v[mask] / rho[mask]
 
-
         # Set rho*Y_k in q for each species
         for name in self.species_names:
             idx = self.species_index[name]
@@ -75,33 +75,197 @@ class CFDGrid:
 
         # Variables for updating total internal energy
         E_mat = np.zeros_like(rho)
-        T = np.full_like(rho, temperature) if np.isscalar(temperature) else temperature
-        # Initialize Cantera reactors for each cell
+
+        # Check if temperature is array or scalar and handle accordingly
+        is_scalar_temp = np.isscalar(temperature)
+        if is_scalar_temp:
+            T = np.full_like(rho, temperature)
+        else:
+            # For array temperature, we need to map physical indices to grid indices
+            T = np.zeros_like(rho)
+            T[1:-1, 1:-1] = temperature  # Copy physical array to interior
+
+        # Initialize Cantera reactors only for interior cells
         self.cantera_reactors = [[None for _ in range(self.nx)] for _ in range(self.ny)]
-        for j in range(self.ny):
-            for i in range(self.nx):
+        self._reactor_list = []
+
+        # Only loop over interior cells (excluding ghost cells)
+        for j in range(1, self.ny - 1):
+            for i in range(1, self.nx - 1):
                 if not mask[j, i]:
-                    raise ValueError(f"Zero density at cell ({j},{i})")
+                    raise ValueError(f"Zero density at interior cell ({j},{i})")
+
                 # Build per-cell mass fraction dict from q
                 cell_Y = {name: float(self.q[j, i, 4 + idx] / rho[j, i]) for name, idx in self.species_index.items()}
                 gas = ct.Solution(mechanism)
                 gas.TDY = T[j, i], rho[j, i], cell_Y
                 e = gas.int_energy_mass
                 E_mat[j, i] = e + 0.5 * (u[j, i]**2 + v[j, i]**2)
+
+                # Create reactor for this interior cell
                 reactor = ct.IdealGasReactor(gas, volume=self.dx * self.dy)
                 self.cantera_reactors[j][i] = reactor
+                self._reactor_list.append(reactor)
+
         self.q[:, :, 3] = rho * E_mat
+
+        # Create a single ReactorNet for all reactors (only interior)
+        if self._reactor_list:
+            self.reactor_net = ct.ReactorNet(self._reactor_list)
+        else:
+            self.reactor_net = None
 
     def initialize_euler(self, rho, rho_u, rho_v, rho_E):
         """
-        Set initial Euler conserved variables for the whole grid.
-        Parameters can be scalars or arrays matching the grid interior shape (ny, nx).
+        Set initial Euler conserved variables for the interior grid.
+        Parameters should be arrays matching the interior grid shape (ny-2, nx-2).
         """
-        ny, nx = self.ny, self.nx
-        self.q[:, :, 0] = np.broadcast_to(rho, (ny, nx))
-        self.q[:, :, 1] = np.broadcast_to(rho_u, (ny, nx))
-        self.q[:, :, 2] = np.broadcast_to(rho_v, (ny, nx))
-        self.q[:, :, 3] = np.broadcast_to(rho_E, (ny, nx))
+        # Check if input is array or scalar
+        if np.isscalar(rho):
+            # If scalar, broadcast to entire grid
+            self.q[:, :, 0] = rho
+            self.q[:, :, 1] = rho_u
+            self.q[:, :, 2] = rho_v
+            self.q[:, :, 3] = rho_E
+        else:
+            # If arrays, they should match the interior size
+            # and we only set the interior cells (excluding ghost cells)
+            self.q[1:-1, 1:-1, 0] = rho
+            self.q[1:-1, 1:-1, 1] = rho_u
+            self.q[1:-1, 1:-1, 2] = rho_v
+            self.q[1:-1, 1:-1, 3] = rho_E
+
+    def create_consistent_initial_state(self, pressure, mass_fractions, velocity_x=0.0, velocity_y=0.0, mechanism='gri30.yaml', temperature=None, energy=None):
+        """
+        Create thermodynamically consistent initial state variables for Euler equations
+        using Cantera for proper equation of state calculations.
+        """
+
+        # Validate input mode
+        if temperature is None and energy is None:
+            raise ValueError("Must provide either temperature or energy")
+
+        # Get interior grid size
+        ny_interior, nx_interior = self.ny - 2, self.nx - 2
+
+        # Convert scalar inputs to arrays if needed
+        def ensure_array(val, shape):
+            if np.isscalar(val):
+                return np.full(shape, val)
+            return val
+
+        # Create arrays for the interior grid
+        P = ensure_array(pressure, (ny_interior, nx_interior))
+        ux = ensure_array(velocity_x, (ny_interior, nx_interior))
+        uy = ensure_array(velocity_y, (ny_interior, nx_interior))
+
+        if temperature is not None:
+            T = ensure_array(temperature, (ny_interior, nx_interior))
+        else:
+            T = np.zeros((ny_interior, nx_interior))  # Will be computed from energy
+
+        if energy is not None:
+            e_in = ensure_array(energy, (ny_interior, nx_interior))
+        else:
+            e_in = None
+
+        # Initialize output arrays
+        rho = np.zeros_like(P)
+        e = np.zeros_like(P)
+        T_out = np.zeros_like(P)
+
+        # Create reference gas object and normalize mass fractions
+        gas = ct.Solution(mechanism)
+        gas.Y = mass_fractions
+        normalized_Y = {}
+        for s in mass_fractions:
+            if s in gas.species_names:
+                idx = gas.species_index(s)
+                normalized_Y[s] = gas.Y[idx]
+
+        # Ensure mass fractions sum to 1
+        Y_sum = sum(normalized_Y.values())
+        if abs(Y_sum - 1.0) > 1e-6:
+            for s in normalized_Y:
+                normalized_Y[s] /= Y_sum
+
+        print(f"Computing thermodynamically consistent state for {ny_interior}x{nx_interior} grid...")
+
+        # Loop over interior cells to calculate state variables
+        for j in range(ny_interior):
+            for i in range(nx_interior):
+                # Ensure pressure is physically valid (positive)
+                P[j, i] = max(1000.0, P[j, i])  # Minimum pressure of 1000 Pa
+
+                try:
+                    if energy is None:
+                        # Temperature-driven initialization (intuitive)
+
+                        # Ensure temperature is physically valid (positive)
+                        T[j, i] = max(200.0, min(5000.0, T[j, i]))  # Limit T to reasonable range
+
+                        # Set gas state with TPY
+                        gas.TPY = T[j, i], P[j, i], normalized_Y
+
+                        # Get density and internal energy
+                        rho[j, i] = gas.density
+                        e[j, i] = gas.int_energy_mass
+                        T_out[j, i] = T[j, i]
+
+                    else:
+                        # Energy-driven initialization (numerically stable)
+
+                        # Iterate to find T that produces the desired internal energy
+                        # Start with a reasonable guess
+                        T_guess = 1000.0 if T[j, i] == 0 else T[j, i]
+
+                        # Simple iterative method to find matching temperature
+                        for iter in range(20):  # Max iterations
+                            gas.TPY = T_guess, P[j, i], normalized_Y
+                            e_current = gas.int_energy_mass
+                            residual = e_current - e_in[j, i]
+
+                            if abs(residual) < 1e-4 * abs(e_in[j, i]):
+                                break  # Converged
+
+                            # Update guess (simple method)
+                            dTde = 1.0 / gas.cv_mass  # Approximate derivative
+                            T_guess -= residual * dTde
+                            T_guess = max(200.0, min(5000.0, T_guess))  # Ensure valid range
+
+                        # Set final state
+                        gas.TPY = T_guess, P[j, i], normalized_Y
+                        rho[j, i] = gas.density
+                        e[j, i] = gas.int_energy_mass
+                        T_out[j, i] = T_guess
+
+                except Exception as ex:
+                    print(f"Error in cell ({j},{i}): {ex}")
+                    # Use failsafe values
+                    T_safe = 300.0 if energy is None else 1000.0
+                    P_safe = max(101325.0, P[j, i])
+
+                    try:
+                        gas.TPY = T_safe, P_safe, normalized_Y
+                        rho[j, i] = gas.density
+                        e[j, i] = gas.int_energy_mass
+                        T_out[j, i] = T_safe
+                    except Exception:
+                        # Last resort: hard-coded values
+                        rho[j, i] = 1.0
+                        e[j, i] = 2.5 * 8314.0 / 0.029  # Approximate air
+                        T_out[j, i] = 300.0
+
+        # Calculate conserved variables
+        rho_u = rho * ux
+        rho_v = rho * uy
+
+        # Total energy = internal + kinetic
+        E = e + 0.5 * (ux**2 + uy**2)
+        rho_E = rho * E
+
+        print("Initial state created successfully")
+        return rho, rho_u, rho_v, rho_E, T_out
 
     def muscl_euler_res2d_v0(self, limiter='MC', fluxMethod='HLLE1d'):
         """
@@ -313,16 +477,14 @@ class CFDGrid:
     def advance_chemistry(self, dt):
         """
         Advance chemistry in all Cantera reactors by time step dt.
-        For each cell:
-        - Update reactor state with current Euler values (rho, u, v, Y_k) from q
-        - Advance reactor by dt
-        - Update q with new state (rho, rho*u, rho*v, rho*E, rho*Y_k)
+        Only processes interior cells (excluding ghost cells).
         """
-        if self.cantera_reactors is None:
+        if self.cantera_reactors is None or not hasattr(self, 'reactor_net') or self.reactor_net is None:
             raise ValueError("Chemistry not initialized. Call initialize_chemistry first.")
 
-        for j in range(self.ny):
-            for i in range(self.nx):
+        # Update all reactors with the latest CFD state before advancing (interior only)
+        for j in range(1, self.ny - 1):
+            for i in range(1, self.nx - 1):
                 reactor = self.cantera_reactors[j][i]
                 if reactor is not None:
                     gas = reactor.thermo
@@ -364,23 +526,39 @@ class CFDGrid:
                             print(f"Failed to set TDY for cell ({j},{i}): {ex2}")
                             continue
 
-                    # 3. Advance chemistry
-                    reactor.advance(reactor.time + dt)
+        # Advance the entire reactor network by dt
+        try:
+            self.reactor_net = ct.ReactorNet(self._reactor_list)
+            self.reactor_net.advance(dt)
+        except Exception as ex:
+            print(f"Chemistry failed: {ex}")
+            raise
 
-                    # 4. Update q with new state
+        # Update q with new state from each reactor (interior only)
+        for j in range(1, self.ny - 1):
+            for i in range(1, self.nx - 1):
+                reactor = self.cantera_reactors[j][i]
+                if reactor is not None:
                     gas = reactor.thermo
                     rho_new = gas.density
                     if not np.isfinite(rho_new) or rho_new <= 0:
                         print(f"Skipping update for cell ({j},{i}): non-physical new density {rho_new}")
                         continue
-                    u_new = u  # velocity not changed by chemistry
-                    v_new = v
+
+                    # Velocity is not changed by chemistry
+                    u_new = self.q[j, i, 1] / self.q[j, i, 0]
+                    v_new = self.q[j, i, 2] / self.q[j, i, 0]
                     e_new = gas.int_energy_mass
                     E_new = e_new + 0.5 * (u_new**2 + v_new**2)
+
+                    # Update conserved variables
+                    #print(f"Updating cell ({j},{i}): rho={rho_new}, u={u_new}, v={v_new}, E={E_new}")
                     self.q[j, i, 0] = rho_new
                     self.q[j, i, 1] = rho_new * u_new
                     self.q[j, i, 2] = rho_new * v_new
                     self.q[j, i, 3] = rho_new * E_new
+
+                    # Update species mass fractions
                     for name in self.species_names:
                         idx = self.species_index[name]
                         self.q[j, i, 4 + idx] = rho_new * gas.Y[gas.species_index(name)]
@@ -565,7 +743,7 @@ def run_2d_sod_with_grid():
         p = (gamma - 1) * r * (E - 0.5 * u ** 2)
 
         # Update CFD plots every 10 steps for performance
-        if it % 10 == 0:
+        if it % 1 == 0:
             update_plots(lines, x_slice, r, u, p, E)
         t += dt
         it += 1
@@ -673,100 +851,206 @@ def run_blast_test():
     print(f"Non-vectorized simulation time: {end - start:.3f} seconds")
     return end - start
 
-def run_blast_test_vectorized():
+def run_blast_test_vectorized(tEnd=0.5, nx=11, ny=11, plot=True):
+    """Run a vectorized blast test with chemistry (hydrogen-oxygen reactions)."""
     start = time.time()
+
     # Parameters
-    nx, ny = 100, 100
     Lx, Ly = 1.0, 1.0
     dx, dy = Lx / nx, Ly / ny
-    n = 5
-    gamma = (n + 2) / n
-    tEnd = 1.0
     CFL = 0.5
 
-    # Grid
-    xc = np.linspace(dx/2, Lx-dx/2, nx)
-    yc = np.linspace(dy/2, Ly-dy/2, ny)
-    x, y = np.meshgrid(xc, yc)
+    # Chemistry setup
+    species = ['H2', 'O2', 'H2O']  # Simplified species list
+    fractions = {
+        'H2': 0.2,      # Increase hydrogen concentration
+        'O2': 0.1,      # Increase oxygen concentration
+        'N2': 0.7       # Use N2 as diluent (faster than Ar)
+    }
+    mechanism = 'h2o2.yaml'  # Much faster than gri30.yaml
 
-    # Initial conditions: blast wave
-    r0, u0, v0, p0 = blast_ic_2d(x, y, p_high=1.0, p_low=0.1, r0=0.1)
-    E0 = p0 / ((gamma - 1) * r0) + 0.5 * (u0**2 + v0**2)
-    Q0 = np.stack([r0, r0*u0, r0*v0, r0*E0], axis=2)
-
-    # Ghost cells
+    # Grid setup (including ghost cells)
     nxg, nyg = nx + 2, ny + 2
-    grid = CFDGrid(Lx, Ly, nxg, nyg)
-    grid.q[1:-1, 1:-1, :4] = Q0
+    grid = CFDGrid(Lx, Ly, nxg, nyg, species=species)
+
+    # Create simple temperature field with a hot spot in center
+    T0 = np.full((ny, nx), 600.0)  # Base temperature 600K for stability
+
+    # Find center indices
+    center_j, center_i = ny // 2, nx // 2
+
+    # Simple hot spot in center (use direct indices rather than calculating distances)
+    if nx >= 3 and ny >= 3:
+        T0[center_j, center_i] = 1500.0
+
+        # If grid is larger than 3x3, make a slightly larger hot spot
+        if nx >= 5 and ny >= 5:
+            T0[center_j-1:center_j+2, center_i-1:center_i+2] = 1500.0
+    else:
+        # For very small grids, just heat the center cell
+        T0[center_j, center_i] = 1500.0
+
+    # Create uniform pressure field (higher pressure for better stability)
+    P0 = np.full((ny, nx), 3.0 * 101325.0)
+
+    # Generate thermodynamically consistent initial state
+    rho0, rho_u0, rho_v0, rho_E0, T_actual = grid.create_consistent_initial_state(
+        temperature=T0,
+        pressure=P0,
+        mass_fractions=fractions,
+        mechanism=mechanism
+    )
+
+    # Initialize Euler variables
+    grid.initialize_euler(rho=rho0, rho_u=rho_u0, rho_v=rho_v0, rho_E=rho_E0)
+
+    # Initialize chemistry using the same temperature field
+    grid.initialize_chemistry(fractions, temperature=T_actual, mechanism=mechanism)
+
+    # Set boundary conditions
     grid.q[:, 0, :] = grid.q[:, 1, :]
     grid.q[:, -1, :] = grid.q[:, -2, :]
     grid.q[0, :, :] = grid.q[1, :, :]
     grid.q[-1, :, :] = grid.q[-2, :, :]
 
-    # Time stepping parameters
-    c0 = np.sqrt(gamma * p0 / r0)
-    vn = np.sqrt(u0**2 + v0**2)
-    lambda1 = vn + c0
-    lambda2 = vn - c0
-    a0 = np.max(np.abs(np.concatenate([lambda1.reshape(-1), lambda2.reshape(-1)])))
-    dt = CFL * min(dx, dy) / a0
+    # Time stepping parameters - use Cantera for accurate gamma
+    import cantera as ct
+    gas = ct.Solution('gri30.yaml')
+    gas.TPY = 600.0, 2.0 * 101325.0, fractions
+    gamma = gas.cp / gas.cv
+
+    # Get a representative sound speed
+    c_sound = np.sqrt(gamma * 2.0 * 101325.0 / rho0.mean())
+    dt = 0.5 * CFL * min(dx, dy) / c_sound  # Conservative time step
+
+    print(f"Using dt = {dt:.6f} seconds")
 
     # Plot setup
-    plt.ion()
-    fig, ax = plt.subplots(figsize=(6, 5))
-    im = ax.imshow(p0, origin='lower', extent=[0, Lx, 0, Ly], cmap='plasma', vmin=0, vmax=1.0)
-    plt.colorbar(im, ax=ax, label='Pressure')
-    ax.set_title('2D Blast Wave: Pressure')
-    ax.set_xlabel('x')
-    ax.set_ylabel('y')
+    if plot:
+        plt.ion()
+        fig, axs = plt.subplots(1, 3, figsize=(18, 5))
 
-    plt.show(block=False)
-    fig.canvas.draw()
-    plt.pause(0.1)  # Give the GUI event loop time to process
+        # Pressure plot (atm)
+        p_plot = P0 / 101325.0
+        im1 = axs[0].imshow(p_plot, origin='lower', extent=[0, Lx, 0, Ly],
+                          cmap='plasma', vmin=0, vmax=10.0)
+        plt.colorbar(im1, ax=axs[0], label='Pressure [atm]')
+        axs[0].set_title('Pressure')
+        axs[0].set_xlabel('x')
+        axs[0].set_ylabel('y')
 
+        # Temperature plot - IMPROVED VISUALIZATION
+        # Use 'inferno' or 'viridis' colormap for better temperature gradient visibility
+        # Set vmin closer to base temperature to see smaller variations
+        temp_min = 550  # Just below base temperature
+        temp_max = 2000  # Maximum expected temperature
+
+        im2 = axs[1].imshow(T_actual, origin='lower', extent=[0, Lx, 0, Ly],
+                         cmap='viridis', vmin=temp_min, vmax=temp_max)
+        cbar = plt.colorbar(im2, ax=axs[1], label='Temperature [K]')
+
+        # Add tick marks at relevant temperatures
+        cbar.set_ticks([600, 800, 1000, 1200, 1400, 1600, 1800, 2000])
+        axs[1].set_title('Temperature')
+        axs[1].set_xlabel('x')
+
+        # H2O mass fraction plot
+        h2o_idx = grid.species_index.get('H2O', -1)
+        h2o_data = np.zeros((ny, nx))
+        if h2o_idx >= 0:
+            im3 = axs[2].imshow(h2o_data, origin='lower', extent=[0, Lx, 0, Ly],
+                              cmap='Blues', vmin=0, vmax=0.15)  # Increased max to show more detail
+            plt.colorbar(im3, ax=axs[2], label='H2O Mass Fraction')
+            axs[2].set_title('H2O (Water)')
+            axs[2].set_xlabel('x')
+
+        plt.tight_layout()
+        plt.show(block=False)
+        fig.canvas.draw()
+        plt.pause(0.1)
+
+    # Time stepping loop
     t = 0.0
     it = 0
     q = grid.q
     while t < tEnd:
+        # Split scheme: advance chemistry first
+        if it % 1 == 0:  # Chemistry step less frequently for stability
+            try:
+                print(f"Chemistry step at t={t:.3f}")
+                grid.advance_chemistry(dt)
+            except Exception as ex:
+                print(f"Chemistry failed at t={t:.3f}: {ex}")
+
         # RK2 step 1
         res = grid.muscl_euler_res2d_v1(limiter='MC', fluxMethod='HLLE1d')
         qs = q - dt * res
+
         # BCs
-        qs[:, 0, :] = qs[:, 1, :]
-        qs[:, -1, :] = qs[:, -2, :]
-        qs[0, :, :] = qs[1, :, :]
-        qs[-1, :, :] = qs[-2, :, :]
+        for s in range(grid.nvars):
+            qs[:, 0, s] = qs[:, 1, s]
+            qs[:, -1, s] = qs[:, -2, s]
+            qs[0, :, s] = qs[1, :, s]
+            qs[-1, :, s] = qs[-2, :, s]
+
         # RK2 step 2
         grid.q = qs
         res2 = grid.muscl_euler_res2d_v1(limiter='MC', fluxMethod='HLLE1d')
         q = 0.5 * (q + qs - dt * res2)
+
         # BCs
-        q[:, 0, :] = q[:, 1, :]
-        q[:, -1, :] = q[:, -2, :]
-        q[0, :, :] = q[1, :, :]
-        q[-1, :, :] = q[-2, :, :]
+        for s in range(grid.nvars):
+            q[:, 0, s] = q[:, 1, s]
+            q[:, -1, s] = q[:, -2, s]
+            q[0, :, s] = q[1, :, s]
+            q[-1, :, s] = q[-2, :, s]
+
         grid.q = q
 
-        # Extract pressure field (interior)
+        # Extract fields (interior)
         r = q[1:-1, 1:-1, 0]
         u = q[1:-1, 1:-1, 1] / r
         v = q[1:-1, 1:-1, 2] / r
         E = q[1:-1, 1:-1, 3] / r
-        p = (gamma - 1) * r * (E - 0.5 * (u ** 2 + v ** 2))
+        p = (gamma - 1) * r * (E - 0.5 * (u**2 + v**2))
 
-        # Update plot every x steps
-        if it % 1 == 0:
-            im.set_data(p)
-            ax.set_title(f'2D Blast Wave: Pressure, t={t:.3f}')
+        # Update plot every few steps
+        if plot and it % 10 == 0:
+            im1.set_data(p / 101325.0)  # Convert to atm for display
+            axs[0].set_title(f'Pressure [atm], t={t:.3f}')
+
+            # Extract temperature from reactors
+            temps = np.zeros((ny, nx))
+            h2o_vals = np.zeros((ny, nx))
+            for j in range(ny):
+                for i in range(nx):
+                    reactor = grid.cantera_reactors[j+1][i+1]
+                    if reactor is not None:
+                        temps[j, i] = reactor.thermo.T
+                        if h2o_idx >= 0:
+                            h2o_vals[j, i] = q[j+1, i+1, 4 + h2o_idx] / r[j, i]
+
+            im2.set_data(temps)
+            axs[1].set_title(f'Temperature [K], t={t:.3f}')
+
+            if h2o_idx >= 0:
+                im3.set_data(h2o_vals)
+                axs[2].set_title(f'H2O Mass Fraction, t={t:.3f}')
+
             plt.pause(0.001)
+
         t += dt
         it += 1
+        if it % 10 == 0:
+            print(f"Step {it}, t={t:.3f}")
 
-    plt.show()
-    plt.close(fig)
-    plt.close('all')
+    if plot:
+        plt.show()
+        plt.close(fig)
+        plt.close('all')
+
     end = time.time()
-    print(f"Vectorized simulation time: {end - start:.3f} seconds")
+    print(f"Vectorized reactive simulation time: {end - start:.3f} seconds")
     return end - start
 
 def initialization_test():
@@ -808,4 +1092,4 @@ def initialization_test():
         print(f"  {name}: {Yk:.6f}")
 
 if __name__ == "__main__":
-    initialization_test()
+    run_blast_test_vectorized()
