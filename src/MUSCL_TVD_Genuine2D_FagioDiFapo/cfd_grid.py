@@ -474,6 +474,123 @@ class CFDGrid:
         res[1:M-1, 1:N-1, :] = residual[1:M-1, 1:N-1, :]
         return res
 
+    def apply_reflecting_bc(self, side='left', ng=1):
+        """
+        Vectorized reflecting BC on specified side ('left','right','bottom','top').
+        Mirrors interior block into ghost block, flips normal momentum, copies
+        rho, tangential momentum, total energy and species. Clamps non-physical
+        values in the ghost region. Removes reactors in ghost cells.
+        """
+        if ng < 1:
+            return
+
+        ny, nx, nvar = self.q.shape
+        small_rho = 1e-12
+        small_int_e = 1e-10
+
+        def clamp_and_fix_block(block):
+            # block shape (ny_block, ng, nvar) or (ng, nx_block, nvar) flattened
+            rho = block[..., 0]
+            bad_rho = (~np.isfinite(rho)) | (rho <= 0)
+            if np.any(bad_rho):
+                rho[bad_rho] = small_rho
+                block[..., 0][bad_rho] = small_rho
+
+            # velocities and energies vectorized
+            u = block[..., 1] / rho
+            v = block[..., 2] / rho
+            E = block[..., 3] / rho
+            kin = 0.5 * (u**2 + v**2)
+            int_e = E - kin
+
+            bad_e = (~np.isfinite(int_e)) | (int_e <= 0)
+            if np.any(bad_e):
+                int_e[bad_e] = small_int_e
+                E_new = int_e + kin[bad_e]
+                block[..., 3][bad_e] = rho[bad_e] * E_new
+
+            # species normalization if present
+            if nvar > 4:
+                Ys = block[..., 4:] / np.maximum(rho[..., None], 1e-12)
+                Ys[~np.isfinite(Ys)] = 0.0
+                Ys = np.clip(Ys, 0.0, 1.0)
+                ssum = Ys.sum(axis=-1, keepdims=True)
+                ssum[ssum <= 0] = 1.0
+                Ys = Ys / ssum
+                block[..., 4:] = Ys * rho[..., None]
+
+            return block
+
+        # LEFT
+        if side == 'left':
+            first = ng
+            if first >= nx - ng:
+                raise ValueError("Grid too small for given ng")
+            src = self.q[:, first:first+ng, :].copy()              # (ny, ng, nvar)
+            dst_block = src[:, ::-1, :].copy()                     # reverse order to mirror
+            dst_block[:, :, 1] *= -1.0                             # flip normal momentum (x)
+            # assign into left ghost columns
+            self.q[:, first-ng:first, :] = dst_block
+            # clamp/fix ghosts
+            self.q[:, first-ng:first, :] = clamp_and_fix_block(self.q[:, first-ng:first, :])
+
+            # clear reactors in ghost columns
+            if self.cantera_reactors is not None:
+                for j in range(ny):
+                    for dst in range(first-ng, first):
+                        self.cantera_reactors[j][dst] = None
+
+        # RIGHT
+        elif side == 'right':
+            last_interior = nx - ng - 1
+            if last_interior < ng:
+                raise ValueError("Grid too small for given ng")
+            src = self.q[:, last_interior-ng+1:last_interior+1, :].copy()  # (ny, ng, nvar)
+            dst_block = src[:, ::-1, :].copy()
+            dst_block[:, :, 1] *= -1.0
+            self.q[:, last_interior+1:last_interior+1+ng, :] = dst_block
+            self.q[:, last_interior+1:last_interior+1+ng, :] = clamp_and_fix_block(self.q[:, last_interior+1:last_interior+1+ng, :])
+
+            if self.cantera_reactors is not None:
+                for j in range(ny):
+                    for dst in range(last_interior+1, last_interior+1+ng):
+                        self.cantera_reactors[j][dst] = None
+
+        # BOTTOM
+        elif side == 'bottom':
+            first = ng
+            if first >= ny - ng:
+                raise ValueError("Grid too small for given ng")
+            src = self.q[first:first+ng, :, :].copy()               # (ng, nx, nvar)
+            dst_block = src[::-1, :, :].copy()                     # reverse rows
+            dst_block[:, :, 2] *= -1.0                             # flip y-momentum (normal)
+            self.q[first-ng:first, :, :] = dst_block
+            self.q[first-ng:first, :, :] = clamp_and_fix_block(self.q[first-ng:first, :, :])
+
+            if self.cantera_reactors is not None:
+                for ii in range(nx):
+                    for dst in range(first-ng, first):
+                        self.cantera_reactors[dst][ii] = None
+
+        # TOP
+        elif side == 'top':
+            last_interior = ny - ng - 1
+            if last_interior < ng:
+                raise ValueError("Grid too small for given ng")
+            src = self.q[last_interior-ng+1:last_interior+1, :, :].copy()  # (ng, nx, nvar)
+            dst_block = src[::-1, :, :].copy()
+            dst_block[:, :, 2] *= -1.0
+            self.q[last_interior+1:last_interior+1+ng, :, :] = dst_block
+            self.q[last_interior+1:last_interior+1+ng, :, :] = clamp_and_fix_block(self.q[last_interior+1:last_interior+1+ng, :, :])
+
+            if self.cantera_reactors is not None:
+                for ii in range(nx):
+                    for dst in range(last_interior+1, last_interior+1+ng):
+                        self.cantera_reactors[dst][ii] = None
+
+        else:
+            raise ValueError("side must be 'left','right','bottom' or 'top'")
+
     def advance_chemistry(self, dt):
         """
         Advance chemistry in all Cantera reactors by time step dt.

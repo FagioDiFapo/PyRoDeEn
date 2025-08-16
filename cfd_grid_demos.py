@@ -6,20 +6,36 @@ import matplotlib.pyplot as plt
 from MUSCL_TVD_FagioDiFapo.euler_solvers import EulerExact
 from src.MUSCL_TVD_Genuine2D_FagioDiFapo.cfd_grid import CFDGrid
 
-def blast_ic_2d(x, y, p_high=1.0, p_low=0.1, r0=0.1):
-    """2D blast wave: high pressure in center, low elsewhere."""
-    xc, yc = 0.5, 0.5
-    r = np.sqrt((x - xc)**2 + (y - yc)**2)
+def blast_ic_2d(x, y, p_high=1.0, p_low=0.1, r0=0.1, center_rel_x=0.5, center_rel_y=0.5):
+    """
+    2D blast wave: high pressure near a center specified as relative coordinates.
+    center_rel_x, center_rel_y are in [0,1] and are multiplied by the domain extents
+    derived from the supplied x,y arrays (so 0.5 -> midpoint).
+    """
+    # domain extents from x,y arrays (works for meshgrid)
+    xmin, xmax = x.min(), x.max()
+    ymin, ymax = y.min(), y.max()
+    center_x = xmin + center_rel_x * (xmax - xmin)
+    center_y = ymin + center_rel_y * (ymax - ymin)
+
+    r = np.sqrt((x - center_x)**2 + (y - center_y)**2)
     rho = np.ones_like(x)
     u = np.zeros_like(x)
     v = np.zeros_like(x)
     p = np.where(r < r0, p_high, p_low)
     return rho, u, v, p
 
-def blast_ic_2d_square(x, y, p_high=1.0, p_low=0.1, halfwidth=0.1):
-    """2D blast wave: high pressure in a square at the center, low elsewhere."""
-    xc, yc = 0.5, 0.5
-    mask = (np.abs(x - xc) < halfwidth) & (np.abs(y - yc) < halfwidth)
+def blast_ic_2d_square(x, y, p_high=1.0, p_low=0.1, halfwidth=0.1, center_rel_x=0.5, center_rel_y=0.5):
+    """
+    2D blast wave: high pressure in a square around a center specified in relative coords.
+    center_rel_x, center_rel_y are in [0,1] and mapped to domain coordinates.
+    """
+    xmin, xmax = x.min(), x.max()
+    ymin, ymax = y.min(), y.max()
+    center_x = xmin + center_rel_x * (xmax - xmin)
+    center_y = ymin + center_rel_y * (ymax - ymin)
+
+    mask = (np.abs(x - center_x) < halfwidth) & (np.abs(y - center_y) < halfwidth)
     rho = np.ones_like(x)
     u = np.zeros_like(x)
     v = np.zeros_like(x)
@@ -365,6 +381,108 @@ def run_blast_test_vectorized(tEnd=0.3, nx=100, ny=100, plot=True):
     print(f"Vectorized simulation time: {end - start:.3f} seconds")
     return end - start
 
+def run_tube_test_vectorized(tEnd=0.3, nx=100, ny=100, plot=True):
+    start = time.time()
+    # Parameters
+    Lx, Ly = 1.0, 1.0
+    dx, dy = Lx / nx, Ly / ny
+    n = 5
+    gamma = (n + 2) / n
+    CFL = 0.5
+
+    # Grid
+    xc = np.linspace(dx/2, Lx-dx/2, nx)
+    yc = np.linspace(dy/2, Ly-dy/2, ny)
+    x, y = np.meshgrid(xc, yc)
+
+    # Initial conditions: blast wave
+    r0, u0, v0, p0 = blast_ic_2d(x, y, p_high=4.0, p_low=0.1, r0=0.2)
+    E0 = p0 / ((gamma - 1) * r0) + 0.5 * (u0**2 + v0**2)
+    Q0 = np.stack([r0, r0*u0, r0*v0, r0*E0], axis=2)
+
+    # Ghost cells
+    nxg, nyg = nx + 2, ny + 2
+    grid = CFDGrid(Lx, Ly, nxg, nyg)
+    grid.q[1:-1, 1:-1, :] = Q0
+    grid.q[:, 0, :] = grid.q[:, 1, :]
+    grid.q[:, -1, :] = grid.q[:, -2, :]
+    grid.q[0, :, :] = grid.q[1, :, :]
+    grid.q[-1, :, :] = grid.q[-2, :, :]
+
+    # Time stepping parameters
+    c0 = np.sqrt(gamma * p0 / r0)
+    vn = np.sqrt(u0**2 + v0**2)
+    lambda1 = vn + c0
+    lambda2 = vn - c0
+    a0 = np.max(np.abs(np.concatenate([lambda1.reshape(-1), lambda2.reshape(-1)])))
+    dt = CFL * min(dx, dy) / a0
+
+    # Plot setup
+    if plot:
+        plt.ion()
+        fig, ax = plt.subplots(figsize=(6, 5))
+        im = ax.imshow(p0, origin='lower', extent=[0, Lx, 0, Ly], cmap='plasma', vmin=0, vmax=1.0)
+        plt.colorbar(im, ax=ax, label='Pressure')
+        ax.set_title('2D Blast Wave: Pressure')
+        ax.set_xlabel('x')
+        ax.set_ylabel('y')
+        plt.show(block=False)
+        fig.canvas.draw()
+        plt.pause(0.1)  # Give the GUI event loop time to process
+
+    t = 0.0
+    it = 0
+    q = grid.q
+    while t < tEnd:
+        # RK2 step 1
+        res = grid.muscl_euler_res2d_v1(limiter='MC', fluxMethod='HLLE1d')
+        qs = q - dt * res
+
+        # --- IMPORTANT: write provisional state into grid.q BEFORE applying BCs ---
+        grid.q = qs.copy()
+
+        # apply a single left reflecting wall, keep other sides transmissive
+        grid.apply_reflecting_bc(side='left', ng=1)
+        grid.q[:, -1, :] = grid.q[:, -2, :]    # right transmissive
+        grid.apply_reflecting_bc(side='bottom', ng=1)
+        grid.apply_reflecting_bc(side='top', ng=1)
+
+        # RK2 step 2: compute residuals from the provisional state with correct ghosts
+        res2 = grid.muscl_euler_res2d_v1(limiter='MC', fluxMethod='HLLE1d')
+        q_new = 0.5 * (q + grid.q - dt * res2)
+
+        # write final state into grid.q, then enforce BCs again
+        grid.q = q_new.copy()
+        grid.apply_reflecting_bc(side='left', ng=1)
+        grid.q[:, -1, :] = grid.q[:, -2, :]    # right transmissive
+        grid.apply_reflecting_bc(side='bottom', ng=1)
+        grid.apply_reflecting_bc(side='top', ng=1)
+
+        # update working state
+        q = grid.q
+
+        # Extract pressure field (interior)
+        r = q[1:-1, 1:-1, 0]
+        u = q[1:-1, 1:-1, 1] / r
+        v = q[1:-1, 1:-1, 2] / r
+        E = q[1:-1, 1:-1, 3] / r
+        p = (gamma - 1) * r * (E - 0.5 * (u ** 2 + v ** 2))
+
+        # Update plot every x steps
+        if plot and it % 1 == 0:
+            im.set_data(p)
+            ax.set_title(f'2D Blast Wave: Pressure, t={t:.3f}')
+            plt.pause(0.001)
+        t += dt
+        it += 1
+
+    if plot:
+        plt.show()
+        plt.close(fig)
+        plt.close('all')
+    end = time.time()
+    print(f"Vectorized simulation time: {end - start:.3f} seconds")
+    return end - start
 
 def benchmark_vectorization():
     sizes = [10, 20, 30, 40, 50, 60]  # You can adjust or extend this list
@@ -434,24 +552,13 @@ def benchmark_vectorization():
     plt.grid(True)
     plt.show()
 
-def run_blast_test_vectorized_custom(nx, ny):
-    # Copy your run_blast_test_vectorized, but use nx, ny as arguments
-    # ... (copy code, replace nx, ny assignments)
-    # Return elapsed time
-    pass
-
-def run_blast_test_custom(nx, ny):
-    # Copy your run_blast_test, but use nx, ny as arguments
-    # ... (copy code, replace nx, ny assignments)
-    # Return elapsed time
-    pass
-
 if __name__ == "__main__":
     # to run as module
     # python -m src.MUSCL_TVD_Genuine2D_FagioDiFapo.cfd_grid
     #run_2d_sod_with_grid()
-    #t_vec = run_blast_test_vectorized()
+    #t_vec = run_blast_test_vectorized(2,50,50)
     #t_nonvec = run_blast_test()
     #if t_vec > 0:
     #    print(f"Speedup: {t_nonvec / t_vec:.2f}x faster (vectorized vs non-vectorized)")
-    benchmark_vectorization()
+    #benchmark_vectorization()
+    run_tube_test_vectorized(1.0, 100, 100, True)
