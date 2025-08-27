@@ -23,6 +23,8 @@ Original repo (archived/forked): [Approximate Riemann Solvers](https://github.co
 
 All original references are preserved in the Python code and/or this repository.
 
+Contact me on [LinkedIn](https://www.linkedin.com/in/genis-bg/) or via [Email](mailto:gbonetgarcia@gmail.com).
+
 ## Licensing and Attribution
 
 This work builds upon MATLAB code developed at Cranfield University and publicly shared by Manuel Diaz. Much of the work here is also based on the insights and further development by [@rhann-09](https://github.com/rhann-09) If you are the original author and would like to be credited explicitly, please open an issue or contact me.
