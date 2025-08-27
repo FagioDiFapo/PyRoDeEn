@@ -16,7 +16,7 @@ The original MATLAB scripts were developed by a former Cranfield University stud
 The original MATLAB source code was created and shared by:
 
 **Manuel A. Diaz**  
-GitHub: [@wme7](https://github.com/wme7)  
+GitHub: GitHub: [@wme7](https://github.com/wme7)  
 Original repo (archived/forked): [Approximate Riemann Solvers](https://github.com/wme7/ApproximateRiemannSolvers)
 
 > *“This repo is my personal collection of finite difference (FD) and finite volume (FV) Riemann solvers using MUSCL and WENO schemes. These solvers are written as short Matlab scripts and they are now publicly available as I've moved to another field of CFD.”* — M.A. Diaz
@@ -25,7 +25,7 @@ All original references are preserved in the Python code and/or this repository.
 
 ## Licensing and Attribution
 
-This work builds upon MATLAB code originally developed at Cranfield University and publicly shared by a former student. If you are the original author and would like to be credited explicitly, please open an issue or contact me.
+This work builds upon MATLAB code developed at Cranfield University and publicly shared by Manuel Diaz. Much of the work here is also based on the insights and further development by GitHub: [@rhann-09]([https://github.com/wme7](https://github.com/rhann-09)) If you are the original author and would like to be credited explicitly, please open an issue or contact me.
 
 All Python code written for this project is © Genis Bonet Garcia, 2025, under MIT.
 
