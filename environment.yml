@@ -1,0 +1,14 @@
+name: pyrodeen
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - scipy
+  - cantera
+  - ipykernel
+  - pip:
+      - jax  # CPU version (works everywhere). On Linux/WSL, upgrade with: pip install --upgrade "jax[cuda12]"
+      - diffrax
+      - equinox

@@ -1,0 +1,350 @@
+"""
+Command-line interface for rde_solver package.
+
+This module provides entry points for the [project.scripts] section in pyproject.toml.
+Each function here should be a thin wrapper around the main functionality.
+
+Usage after installation:
+    $ rde-muscl-1d --help
+    $ rde-muscl-2d --config my_config.yaml
+    $ rde-sod-tube --output results/
+"""
+
+import argparse
+import sys
+from pathlib import Path
+from typing import Optional
+
+
+def run_muscl_1d() -> None:
+    """
+    Entry point for 1D MUSCL solver CLI command.
+
+    This is called when user runs: rde-muscl-1d
+    """
+    parser = argparse.ArgumentParser(
+        description="Run 1D MUSCL Euler solver"
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        help="Path to configuration YAML file"
+    )
+    parser.add_argument(
+        "--nx",
+        type=int,
+        default=100,
+        help="Number of grid cells (default: 100)"
+    )
+    parser.add_argument(
+        "--cfl",
+        type=float,
+        default=0.5,
+        help="CFL number (default: 0.5)"
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("output"),
+        help="Output directory (default: output/)"
+    )
+
+    args = parser.parse_args()
+
+    # Import here to avoid slow imports at CLI startup
+    from rde_solver.core.solvers import MUSCL1D
+    from rde_solver.visualization import plot_results
+
+    print(f"Running 1D MUSCL solver with nx={args.nx}, CFL={args.cfl}")
+
+    # Create solver
+    solver = MUSCL1D(nx=args.nx, cfl=args.cfl)
+
+    # Run simulation
+    result = solver.solve_sod_tube(t_end=0.2)
+
+    # Save results
+    args.output.mkdir(parents=True, exist_ok=True)
+    result.save(args.output / "solution.h5")
+
+    # Plot
+    plot_results(result, save_path=args.output / "plot.png")
+
+    print(f"Results saved to {args.output}")
+
+
+def run_muscl_2d() -> None:
+    """
+    Entry point for 2D MUSCL solver CLI command.
+
+    This is called when user runs: rde-muscl-2d
+    """
+    parser = argparse.ArgumentParser(
+        description="Run 2D MUSCL Euler solver"
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Path to configuration YAML file"
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("output"),
+        help="Output directory (default: output/)"
+    )
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        help="Generate visualization after solving"
+    )
+
+    args = parser.parse_args()
+
+    # Import here for lazy loading
+    from rde_solver.core.solvers import MUSCL2D
+    from rde_solver.utils import load_config
+
+    # Load configuration
+    config = load_config(args.config)
+
+    print(f"Running 2D MUSCL solver with config: {args.config}")
+
+    # Create and run solver
+    solver = MUSCL2D(**config['solver'])
+    result = solver.solve(**config['simulation'])
+
+    # Save results
+    args.output.mkdir(parents=True, exist_ok=True)
+    result.save(args.output / "solution.h5")
+
+    if args.visualize:
+        from rde_solver.visualization import create_animation
+        create_animation(result, save_path=args.output / "animation.mp4")
+
+    print(f"Results saved to {args.output}")
+
+
+def run_sod_tube() -> None:
+    """
+    Entry point for Sod tube benchmark CLI command.
+
+    This is called when user runs: rde-sod-tube
+    """
+    parser = argparse.ArgumentParser(
+        description="Run Sod shock tube benchmark problem"
+    )
+    parser.add_argument(
+        "--dimension",
+        type=int,
+        choices=[1, 2],
+        default=1,
+        help="Dimensionality (1 or 2, default: 1)"
+    )
+    parser.add_argument(
+        "--nx",
+        type=int,
+        default=100,
+        help="Grid resolution (default: 100)"
+    )
+    parser.add_argument(
+        "--compare",
+        action="store_true",
+        help="Compare with analytical solution"
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("output"),
+        help="Output directory (default: output/)"
+    )
+
+    args = parser.parse_args()
+
+    print(f"Running {args.dimension}D Sod tube benchmark")
+
+    if args.dimension == 1:
+        from rde_solver.core.solvers import MUSCL1D
+        from rde_solver.benchmarks import SodTubeExact
+
+        solver = MUSCL1D(nx=args.nx)
+        result = solver.solve_sod_tube(t_end=0.2)
+
+        if args.compare:
+            exact = SodTubeExact()
+            error = exact.compute_error(result)
+            print(f"L2 error: {error:.6e}")
+    else:
+        from rde_solver.core.solvers import MUSCL2D
+
+        solver = MUSCL2D(nx=args.nx, ny=args.nx)
+        result = solver.solve_sod_tube_2d(t_end=0.2)
+
+    # Save
+    args.output.mkdir(parents=True, exist_ok=True)
+    result.save(args.output / "solution.h5")
+
+    print(f"Results saved to {args.output}")
+
+
+def validate_installation() -> None:
+    """
+    Validate that the package is correctly installed.
+
+    This is called when user runs: rde-validate
+    """
+    print("Validating rde_solver installation...")
+
+    errors = []
+
+    # Check core imports
+    try:
+        from rde_solver import __version__
+        print(f"✓ Package version: {__version__}")
+    except ImportError as e:
+        errors.append(f"✗ Failed to import package: {e}")
+
+    # Check numpy
+    try:
+        import numpy as np
+        print(f"✓ NumPy version: {np.__version__}")
+    except ImportError:
+        errors.append("✗ NumPy not installed")
+
+    # Check scipy
+    try:
+        import scipy
+        print(f"✓ SciPy version: {scipy.__version__}")
+    except ImportError:
+        errors.append("✗ SciPy not installed")
+
+    # Check matplotlib
+    try:
+        import matplotlib
+        print(f"✓ Matplotlib version: {matplotlib.__version__}")
+    except ImportError:
+        errors.append("✗ Matplotlib not installed")
+
+    # Check optional: JAX
+    try:
+        import jax
+        print(f"✓ JAX version: {jax.__version__} (optional)")
+    except ImportError:
+        print("○ JAX not installed (optional)")
+
+    # Check optional: Cantera
+    try:
+        import cantera as ct
+        print(f"✓ Cantera version: {ct.__version__} (optional)")
+    except ImportError:
+        print("○ Cantera not installed (optional)")
+
+    # Run quick test
+    print("\nRunning quick functionality test...")
+    try:
+        from rde_solver.core.solvers import MUSCL1D
+        solver = MUSCL1D(nx=10)
+        result = solver.solve_sod_tube(t_end=0.01)
+        print("✓ Basic solver test passed")
+    except Exception as e:
+        errors.append(f"✗ Basic solver test failed: {e}")
+
+    # Summary
+    print("\n" + "=" * 50)
+    if errors:
+        print("Installation validation FAILED:")
+        for error in errors:
+            print(f"  {error}")
+        sys.exit(1)
+    else:
+        print("✓ Installation validation PASSED")
+        print("All core components working correctly!")
+        sys.exit(0)
+
+
+def run_benchmarks() -> None:
+    """
+    Run performance benchmarks.
+
+    This is called when user runs: rde-benchmark
+    """
+    parser = argparse.ArgumentParser(
+        description="Run performance benchmarks"
+    )
+    parser.add_argument(
+        "--suite",
+        choices=["all", "chemistry", "solvers", "scaling"],
+        default="all",
+        help="Benchmark suite to run (default: all)"
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("benchmarks/results"),
+        help="Output directory (default: benchmarks/results/)"
+    )
+
+    args = parser.parse_args()
+
+    print(f"Running benchmark suite: {args.suite}")
+
+    # Import benchmark modules
+    if args.suite in ["all", "chemistry"]:
+        from benchmarks.benchmark_chemistry import run_chemistry_benchmarks
+        print("\n" + "=" * 50)
+        print("Chemistry Benchmarks")
+        print("=" * 50)
+        run_chemistry_benchmarks(output_dir=args.output)
+
+    if args.suite in ["all", "solvers"]:
+        from benchmarks.benchmark_solvers import run_solver_benchmarks
+        print("\n" + "=" * 50)
+        print("Solver Benchmarks")
+        print("=" * 50)
+        run_solver_benchmarks(output_dir=args.output)
+
+    if args.suite in ["all", "scaling"]:
+        from benchmarks.benchmark_scaling import run_scaling_benchmarks
+        print("\n" + "=" * 50)
+        print("Scaling Benchmarks")
+        print("=" * 50)
+        run_scaling_benchmarks(output_dir=args.output)
+
+    print(f"\nBenchmark results saved to {args.output}")
+
+
+# Entry point for direct script execution (optional)
+def main() -> None:
+    """
+    Main entry point when running as: python -m rde_solver.cli
+    """
+    parser = argparse.ArgumentParser(
+        description="RDE Solver CLI",
+        usage="rde-solver <command> [options]"
+    )
+    parser.add_argument(
+        "command",
+        choices=["muscl-1d", "muscl-2d", "sod-tube", "validate", "benchmark"],
+        help="Command to run"
+    )
+
+    args, remaining = parser.parse_known_args()
+
+    # Restore sys.argv for subcommand parsers
+    sys.argv = [sys.argv[0]] + remaining
+
+    # Dispatch to appropriate function
+    commands = {
+        "muscl-1d": run_muscl_1d,
+        "muscl-2d": run_muscl_2d,
+        "sod-tube": run_sod_tube,
+        "validate": validate_installation,
+        "benchmark": run_benchmarks,
+    }
+
+    commands[args.command]()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,7 @@
+nx = 200
+ny = 1
+tEnd = 0.150
+CFL = 0.500
+gamma = 1.400
+iterations = 132
+execution_time = 5.083748
