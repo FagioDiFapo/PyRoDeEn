@@ -1,4 +1,4 @@
-# Approximate Riemann Solvers – Python Port and Extensions
+# (WIP) Approximate Riemann Solvers – Python Port and Extensions
 
 This repository is a Python-based port and extension of a collection of finite difference (FD) and finite volume (FV) solvers originally developed in MATLAB. The solvers implement a variety of numerical schemes — including MUSCL, WENO, and THINC-BVD — to solve the Euler equations using approximate Riemann solvers.
 
