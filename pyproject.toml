@@ -2,7 +2,8 @@
 name = "pyrodeen"
 version = "0.0.1"
 dependencies = [
-  "numpy"
+  "numpy",
+  "pytest"
 ]
 authors = [
   { name="Genis Bonet Garcia", email="gbonetgarcia@gmail.com" },

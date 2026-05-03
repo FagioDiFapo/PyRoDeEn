@@ -28,7 +28,3 @@ class Grid:
     @property
     def values_gh(self) -> np.ndarray:
         return self._grid
-
-def test_grid():
-    grid_test = Grid(100, 100, 1, 1, 1)
-    print(grid_test.values)
