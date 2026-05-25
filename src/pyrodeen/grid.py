@@ -20,7 +20,7 @@ class Grid:
         self.lx = lx
         self.ly = ly
         self.nv = nv
-        self._grid = np.zeros([nx + 2, ny + 2, nv])
+        self._grid = np.zeros([ny + 2, nx + 2, nv])
 
     @property
     def values(self) -> np.ndarray:

@@ -252,14 +252,14 @@ class Solver:
         Note:
             Original code by Manuel Diaz, NTU, 05.25.2015.
         """
-        q = self.grid.euler_ghosts  # Need ghost cells for MUSCL reconstruction
-        dx = self.grid.dx
-        dy = self.grid.dy
-        nvars = self.grid.euler_count
+        q = self.grid.values_gh  # Need ghost cells for MUSCL reconstruction
+        dx = self.grid.lx / self.grid.nx
+        dy = self.grid.ly / self.grid.ny
+        nvars = self.grid.nv
         N = (
-            self.grid.nx_ghost
+            self.grid.nx + 2
         )  # Total cells including ghosts (matches CFDGrid convention where nx=total array size)
-        M = self.grid.ny_ghost  # Total cells including ghosts
+        M = self.grid.ny + 2  # Total cells including ghosts
 
         # Allocate arrays for all states
         qN = np.zeros((M, N, nvars))
