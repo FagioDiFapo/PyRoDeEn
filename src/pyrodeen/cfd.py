@@ -189,7 +189,7 @@ class Solver:
         Note:
             Original code by Manuel Diaz, NTU, 05.25.2015.
         """
-        n_x, n_y = normal
+        """ n_x, n_y = normal
         num_species = qL.shape[-1] - 4
 
         # Decode left and right primitive states
@@ -234,7 +234,58 @@ class Solver:
             return euler_flux
 
         species_flux = self._species_flux(euler_flux[..., 0], qL, qR, rho_L, rho_R)
-        return np.concatenate([euler_flux, species_flux], axis=-1)
+        return np.concatenate([euler_flux, species_flux], axis=-1) """
+        nx, ny = normal
+        # Number of chemistry species
+        ns = qL.shape[-1] - 4
+
+        rL = qL[..., 0]; rR = qR[..., 0]
+        uL = qL[..., 1]/rL; vL = qL[..., 2]/rL
+        uR = qR[..., 1]/rR; vR = qR[..., 2]/rR
+        vnL = uL*nx + vL*ny; vnR = uR*nx + vR*ny
+        pL = (self.gamma - 1) * (qL[..., 3] - rL*(uL**2 + vL**2)/2)
+        pR = (self.gamma - 1) * (qR[..., 3] - rR*(uR**2 + vR**2)/2)
+        aL = np.sqrt(self.gamma * pL / rL); aR = np.sqrt(self.gamma * pR / rR)
+        HL = (qL[..., 3] + pL) / rL; HR = (qR[..., 3] + pR) / rR
+
+        val = rR / rL
+        RT = np.sqrt(val)
+        u = (uL + RT * uR) / (1 + RT)
+        v = (vL + RT * vR) / (1 + RT)
+        H = (HL + RT * HR) / (1 + RT)
+        a = np.sqrt((self.gamma - 1)*(H - (u**2 + v**2)/2))
+        vn = u*nx + v*ny
+
+        SLm = np.minimum.reduce([vnL - aL, vn - a, np.zeros_like(vn)])
+        SRp = np.maximum.reduce([vnR + aR, vn + a, np.zeros_like(vn)])
+
+        FL = np.stack([
+            rL * vnL,
+            rL * vnL * uL + pL * nx,
+            rL * vnL * vL + pL * ny,
+            rL * vnL * HL
+        ], axis=-1)
+        FR = np.stack([
+            rR * vnR,
+            rR * vnR * uR + pR * nx,
+            rR * vnR * vR + pR * ny,
+            rR * vnR * HR
+        ], axis=-1)
+
+        denom = SRp - SLm
+        denom_safe = np.where(denom == 0, 1.0, denom)
+        HLLE = (SRp[..., None]*FL - SLm[..., None]*FR + SLm[..., None]*SRp[..., None]*(qR[..., :4] - qL[..., :4])) / denom_safe[..., None]
+        HLLE = np.where(denom[..., None] == 0, 0.0, HLLE)
+
+        if ns > 0:
+            mass_flux = HLLE[..., 0]
+            YL = qL[..., 4:] / rL[..., None]
+            YR = qR[..., 4:] / rR[..., None]
+            Y_up = np.where(mass_flux[..., None] >= 0, YL, YR)
+            species_flux = mass_flux[..., None] * Y_up
+            return np.concatenate([HLLE, species_flux], axis=-1)
+        else:
+            return HLLE
 
     def muscl_euler_res2d(self, limiter: str = "MC") -> np.ndarray:
         """Compute residuals for 2D Euler equations using MUSCL-HLLE.
@@ -387,3 +438,27 @@ class Solver:
         elif bc.top == BC.REFLECTING:
             q[-1, :, :] = q[-2, :, :]
             q[-1, :, 2] *= -1  # Flip v-momentum
+
+    def sod_tube_ic(
+        self,
+        gamma: float = 1.4,
+        p_high: float = 1.0,
+        p_low: float = 0.1,
+        rho_high: float = 1.0,
+        rho_low: float = 0.125,
+    ):
+        """1D Sod shock tube initial condition."""
+        grid = self.grid
+        grid.values[:, :, :] = 0.0  # Clear all values
+        grid.values[:, : grid.nx // 2, :] = [
+            rho_high,
+            0.0,
+            0.0,
+            p_high / ((gamma - 1)),
+        ]  # Left half
+        grid.values[:, grid.nx // 2 :, :] = [
+            rho_low,
+            0.0,
+            0.0,
+            p_low / ((gamma - 1)),
+        ]  # Right half

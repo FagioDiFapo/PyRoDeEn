@@ -26,6 +26,10 @@ class Grid:
     def values(self) -> np.ndarray:
         return self._grid[1:-1, 1:-1, :]
 
+    @values.setter
+    def values(self, val: np.ndarray) -> None:
+        self._grid[1:-1, 1:-1, :] = val
+
     @property
     def values_gh(self) -> np.ndarray:
         return self._grid
