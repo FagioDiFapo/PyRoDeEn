@@ -19,6 +19,8 @@ class Grid:
         self.ny = ny
         self.lx = lx
         self.ly = ly
+        self.dx = lx / nx
+        self.dy = ly / ny
         self.nv = nv
         self._grid = np.zeros([ny + 2, nx + 2, nv])
 
