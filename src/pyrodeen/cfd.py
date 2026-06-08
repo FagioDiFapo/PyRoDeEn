@@ -387,6 +387,23 @@ class Solver:
             q[-1, :, :] = q[-2, :, :]
             q[-1, :, 2] *= -1  # Flip v-momentum
 
+
+    def RK2_step(self, grid, dt: float) -> None:
+        """Perform a single RK2 (Heun's method) time step.
+        """
+        # RK2 1st step
+        res1 = self.muscl_euler_res2d(grid)
+        q_old = grid.values.copy()  # Store original state before update
+        values_1 = q_old - dt * res1
+        # Update grid and apply BCs
+        grid.values = values_1
+        self.apply_boundary_conditions(grid)
+        # RK2 2nd step / update q (correct SSP-RK2: both stages weighted by 0.5*dt)
+        res2 = self.muscl_euler_res2d(grid)
+        grid.values = 0.5 * (q_old + values_1 - dt * res2)
+        # Natural BCs again
+        self.apply_boundary_conditions(grid)
+
     def sod_tube_ic(
         self,
         grid,

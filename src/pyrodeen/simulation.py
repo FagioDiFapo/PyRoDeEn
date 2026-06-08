@@ -2,56 +2,9 @@ import numpy as np
 from pyrodeen.grid import Grid
 from pyrodeen.cfd import Solver, BoundaryConfig
 import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from pyrodeen.plot import *
 from scipy.optimize import root_scalar
-
-
-def plot_euler_1d(x, r, u, p, E, fig=None, lines=None):
-    if lines is None:
-        plt.ion()
-        fig, axs = plt.subplots(2, 2, num=2)
-        lines = [
-            axs[0, 0].plot([], [], ".b")[0],
-            axs[0, 1].plot([], [], ".m")[0],
-            axs[1, 0].plot([], [], ".k")[0],
-            axs[1, 1].plot([], [], ".r")[0],
-        ]
-        axs[0, 0].plot(x, r, "-k", label="Exact")
-        axs[0, 1].plot(x, u, "-k", label="Exact")
-        axs[1, 0].plot(x, p, "-k", label="Exact")
-        axs[1, 1].plot(x, E, "-k", label="Exact")
-        axs[0, 0].set_xlabel("x")
-        axs[0, 0].set_ylabel(r"$\rho$")
-        axs[0, 1].set_xlabel("x")
-        axs[0, 1].set_ylabel("u")
-        axs[1, 0].set_xlabel("x")
-        axs[1, 0].set_ylabel("p")
-        axs[1, 1].set_xlabel("x")
-        axs[1, 1].set_ylabel("E")
-        fig.suptitle("SSP-RK2 TVD-MUSCL Euler Eqns. (2D Sod Tube)", fontsize=10)
-        axs[0, 0].set_xlim([0, 1])
-        axs[0, 0].set_ylim([0, 1.1])
-        axs[0, 1].set_xlim([0, 1])
-        axs[0, 1].set_ylim([-0.1, 1.1])
-        axs[1, 0].set_xlim([0, 1])
-        axs[1, 0].set_ylim([0, 1.1])
-        axs[1, 1].set_xlim([0, 1])
-        axs[1, 1].set_ylim([1.5, 3.5])
-        for axrow in axs:
-            for ax in axrow:
-                ax.legend()
-        plt.tight_layout()
-
-    lines[0].set_data(x, r)
-    lines[1].set_data(x, u)
-    lines[2].set_data(x, p)
-    lines[3].set_data(x, E)
-
-    # draw
-    plt.draw()
-    plt.pause(0.1)
-
-    # Return whether the figure still exists (False if closed)
-    return fig, plt.fignum_exists(fig.number), lines
 
 
 def EulerExact(rho1, u1, p1, rho4, u4, p4, tEnd, n):
@@ -191,7 +144,7 @@ def EulerExact(rho1, u1, p1, rho4, u4, p4, tEnd, n):
 
 
 def run_simulation(
-    CFL=0.50, t_end=0.15, nx=100, ny=100, lx=1.0, ly=1.0, nv=4, n=5, plot=False
+    CFL=0.50, t_end=0.15, nx=100, ny=100, lx=1.0, ly=1.0, nv=4, n=5, plot=False, video_file=None
 ):
     # From gas DOF
     gamma = (n + 2) / n
@@ -207,6 +160,7 @@ def run_simulation(
     # Plot
     xe, re, ue, pe, ee, *_ = EulerExact(1.0, 0.0, 1.0, 0.125, 0.0, 0.1, t_end, n)
     Ee = ee + 0.5 * ue**2
+    #frames = []  # Collect frame data for video
     if plot:
         fig, open, lines = plot_euler_1d(
             xe,
@@ -234,18 +188,8 @@ def run_simulation(
     while t < t_end:
         if not open:
             break
-        # RK2 1st step
-        res1 = solver.muscl_euler_res2d(grid)
-        q_old = grid.values.copy()  # Store original state before update
-        values_1 = q_old - dt * res1
-        # Update grid and apply BCs
-        grid.values = values_1
-        solver.apply_boundary_conditions(grid)
-        # RK2 2nd step / update q (correct SSP-RK2: both stages weighted by 0.5*dt)
-        res2 = solver.muscl_euler_res2d(grid)
-        grid.values = 0.5 * (q_old + values_1 - dt * res2)
-        # Natural BCs again
-        solver.apply_boundary_conditions(grid)
+        # RK2
+        solver.RK2_step(grid, dt)
         # Compute flow properties
         r = grid.values[:, :, 0]
         u = grid.values[:, :, 1] / r
@@ -266,14 +210,16 @@ def run_simulation(
                 u[0, :],
                 p[0, :],
                 E[0, :],
-                fig,
-                lines,
+                record = video_file is not None
             )
         if t + dt > t_end:
             dt = t_end - t
         t += dt
 
     plt.ioff()
+    if video_file:
+        save_1d_animation(video_file)
+
     plt.show()
 
 
@@ -291,7 +237,7 @@ def main():
     #    "plotFig": True,
     # }
     # run_simulation(**params)
-    run_simulation(ny=1, ly=0.1, plot=True)
+    run_simulation(ny=1, ly=0.1, plot=True, video_file="simulation.mp4")
 
 
 if __name__ == "__main__":
